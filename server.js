@@ -15,6 +15,29 @@ app.use(express.static(__dirname + '/public'));
 app.use(express.json());       
 app.use(express.urlencoded({extended: true}));
 
+// Main landing page
+app.get('/', function(req,res){
+    res.render('pages/home');
+});
+
+// Handle AI input submission
+app.post('/generate', async function(req,res){
+    try{
+        const { userInput } = req.body;
+
+        if (!userInput){
+            return res.render('pages/home', { error: 'Please provide an input.', result: null}
+         }
+
+         const result = `You said: ${userInput}`;
+         res.render('pages/home', {result: result, error: null});
+
+    } catch (error) {
+         console.log(error);
+        res.render('pages/home', {error: 'Something went wrong.', result:nulll});
+    }            
+});
+
 // Needed for Prisma to connect to database
 const { Pool } = require('pg');
 const { PrismaPg } = require('@prisma/adapter-pg');
