@@ -11,11 +11,12 @@
   "license": "ISC",
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",
-    "@prisma/client": "^7.8.0",
+    "@prisma/client": "^6.19.3",
     "@prisma/config": "^7.8.0",
     "dotenv": "^16.6.1",
     "ejs": "^3.1.9",
     "express": "^4.19.1",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "prisma": "^6.19.3"
   }
 }
