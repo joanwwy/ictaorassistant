@@ -3,35 +3,41 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Home</title>
+    <title>ICT AOR Assistant</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"/>
     <link rel="stylesheet" href="/css/style.css" >
 </head>
 <body>
     <main class="container">
-        <!-- Navbar which can be reused across other pages -->
         <%- include('../partials/navbar'); %>
 
-        <!-- Information welcoming visitors to my page -->
         <div class="welcome-container">
-            <h1>Welcome to my blog</h1>
-            <h2>Learn about what happened in my day!</h2>
+            <h1>ICT AOR Assistant</h1>
+            <h2>Submit your query below to get started.</h2>
         </div>
 
-        <div class="new-post-btn-container">
-           <a href="/new" class="button" role="button">+ New Post</a>
-        </div>
+        <form action="/generate" method="post" enctype="multipart/form-data">
+            <label for="userInput">Your Query</label>
+            <textarea id="userInput" name="userInput" placeholder="Enter your query here..." rows="5"></textarea>
 
-        <!-- Show blog posts -->
-        <% blogs.forEach(post => { %>
-            <article class="post-container">
-                <h3><%= post.title %></h3>
-                <p><%= post.content %></p>
-                <form action="/delete/<%= post.id %>" method="post" onsubmit="return confirm('Do you really want to delete this post?');">
-                    <button class="outline primary" type="submit">Delete</button>
-                </form>
+            <label for="attachment">Attach a file (optional)</label>
+            <input type="file" id="attachment" name="attachment">
+
+            <button type="submit">Submit</button>
+        </form>
+
+        <% if (error) { %>
+            <article class="error-container">
+                <p><%= error %></p>
             </article>
-        <% }); %>
+        <% } %>
+
+        <% if (result) { %>
+            <article class="result-container">
+                <h3>Result</h3>
+                <p><%= result %></p>
+            </article>
+        <% } %>
     </main>
 </body>
 </html>
