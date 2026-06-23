@@ -12,9 +12,10 @@ datasource db {
   provider = "postgresql"
 }
 
-// Post model represents individual blog posts
-model Post {
-  id        Int       @id @default(autoincrement())
-  title     String
-  content   String
+model Submission {
+  id        Int      @id @default(autoincrement())
+  userInput String
+  fileName  String?
+  filePath  String?
+  createdAt DateTime @default(now())
 }

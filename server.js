@@ -2,8 +2,10 @@
 require("dotenv").config();
 
 // Needed for Express
-var express = require('express')
-var app = express()
+var express = require('express');
+var app = express();
+var multer = require('multer');
+var upload = multer({ dest: 'uploads/' });
 
 // Needed for EJS
 app.set('view engine', 'ejs');
