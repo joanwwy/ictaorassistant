@@ -15,28 +15,6 @@ app.use(express.static(__dirname + '/public'));
 app.use(express.json());       
 app.use(express.urlencoded({extended: true}));
 
-// Main landing page
-app.get('/', function(req,res){
-    res.render('pages/home');
-});
-
-// Handle AI input submission
-app.post('/generate', async function(req,res){
-    try{
-        const { userInput } = req.body;
-
-        if (!userInput){
-            return res.render('pages/home', { error: 'Please provide an input.', result: null}
-         }
-
-         const result = `You said: ${userInput}`;
-         res.render('pages/home', {result: result, error: null});
-
-    } catch (error) {
-         console.log(error);
-        res.render('pages/home', {error: 'Something went wrong.', result:nulll});
-    }            
-});
 
 // Needed for Prisma to connect to database
 const { Pool } = require('pg');
@@ -47,81 +25,39 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 // Main landing page
-app.get('/', async function(req, res) {
+app.get('/', function(req, res) {
+    res.render('pages/home', { result: null, error: null });
+});
 
-    // Try-Catch for any errors
+// Handle AI input submission
+app.post('/generate', upload.single('attachment'), async function(req, res) {
     try {
-        // Get all blog posts
-        const blogs = await prisma.post.findMany({
-                orderBy: [
-                  {
-                    id: 'desc'
-                  }
-                ]
-        });
+        const { userInput } = req.body;
+        const file = req.file; // will be undefined if no file uploaded
 
-        // Render the homepage with all the blog posts
-        await res.render('pages/home', { blogs: blogs });
-      } catch (error) {
-        res.render('pages/home');
-        console.log(error);
-      } 
-});
-
-// About page
-app.get('/about', function(req, res) {
-    res.render('pages/about');
-});
-
-// New post page
-app.get('/new', function(req, res) {
-    res.render('pages/new');
-});
-
-// Create a new post
-app.post('/new', async function(req, res) {
-    
-    // Try-Catch for any errors
-    try {
-        // Get the title and content from submitted form
-        const { title, content } = req.body;
-
-        // Reload page if empty title or content
-        if (!title || !content) {
-            console.log("Unable to create new post, no title or content");
-            res.render('pages/new');
-        } else {
-            // Create post and store in database
-            const blog = await prisma.post.create({
-                data: { title, content },
-            });
-
-            // Redirect back to the homepage
-            res.redirect('/');
+        if (!userInput) {
+            return res.render('pages/home', { error: 'Please provide an input.', result: null });
         }
-      } catch (error) {
-        console.log(error);
-        res.render('pages/new');
-      }
 
-});
-
-// Delete a post by id
-app.post("/delete/:id", async (req, res) => {
-    const { id } = req.params;
-    
-    try {
-        await prisma.post.delete({
-            where: { id: parseInt(id) },
+        // Save the submission to the database
+        const submission = await prisma.submission.create({
+            data: {
+                userInput: userInput,
+                fileName: file ? file.originalname : null,
+                filePath: file ? file.path : null, // store S3 URL here instead if using cloud storage
+            },
         });
-      
-        // Redirect back to the homepage
-        res.redirect('/');
+
+        // Call your AI API here, passing userInput and/or file contents
+        // const result = await callAI(userInput, file);
+        const result = `Submission saved with ID: ${submission.id}`; // placeholder
+
+        res.render('pages/home', { result: result, error: null });
     } catch (error) {
         console.log(error);
-        res.redirect('/');
+        res.render('pages/home', { error: 'Something went wrong.', result: null });
     }
-  });
+});
 
 // Tells the app which port to run on
 const PORT = process.env.PORT || 8080;
