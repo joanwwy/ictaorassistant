@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+langchain
+langchain-experimental
+langchain-openai
+python-multipart
+openai

@@ -7,6 +7,11 @@ var app = express();
 var multer = require('multer');
 var upload = multer({ dest: 'uploads/' });
 
+// Needed for form-data and fetch
+const FormData = require('form-data');
+const fetch = require('node-fetch');
+const fs = require('fs');
+
 // Needed for EJS
 app.set('view engine', 'ejs');
 
@@ -39,26 +44,34 @@ app.get('/about', function(req, res) {
 app.post('/generate', upload.single('attachment'), async function(req, res) {
     try {
         const { userInput } = req.body;
-        const file = req.file; // will be undefined if no file uploaded
+        const file = req.file;
 
         if (!userInput) {
             return res.render('pages/home', { error: 'Please provide an input.', result: null });
         }
 
-        // Save the submission to the database
-        const submission = await prisma.submission.create({
-            data: {
-                userInput: userInput,
-                fileName: file ? file.originalname : null,
-                filePath: file ? file.path : null, // store S3 URL here instead if using cloud storage
-            },
+        if (!file) {
+            return res.render('pages/home', { error: 'Please attach a file.', result: null });
+        }
+
+        // Build form data to send to Python backend
+        const formData = new FormData();
+        formData.append('query', userInput);
+        formData.append('file', fs.createReadStream(file.path), file.originalname);
+
+        // Call Python backend
+        const response = await fetch(process.env.PYTHON_BACKEND_URL + '/process', {
+            method: 'POST',
+            body: formData,
+            headers: formData.getHeaders(),
         });
 
-        // Call your AI API here, passing userInput and/or file contents
-        // const result = await callAI(userInput, file);
-        const result = `Submission saved with ID: ${submission.id}`; // placeholder
+        const data = await response.json();
 
-        res.render('pages/home', { result: result, error: null });
+        // Clean up uploaded file after processing
+        fs.unlinkSync(file.path);
+
+        res.render('pages/home', { result: data.result, error: null });
     } catch (error) {
         console.log(error);
         res.render('pages/home', { error: 'Something went wrong.', result: null });
