@@ -17,7 +17,6 @@ app.use(express.static(__dirname + '/public'));
 app.use(express.json());       
 app.use(express.urlencoded({extended: true}));
 
-
 // Needed for Prisma to connect to database
 const { Pool } = require('pg');
 const { PrismaPg } = require('@prisma/adapter-pg');
@@ -29,6 +28,11 @@ const prisma = new PrismaClient({ adapter });
 // Main landing page
 app.get('/', function(req, res) {
     res.render('pages/home', { result: null, error: null });
+});
+
+// About landing page
+app.get('/about', function(req, res) {
+    res.render('pages/about');
 });
 
 // Handle AI input submission
