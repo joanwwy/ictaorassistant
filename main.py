@@ -13,6 +13,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
 @app.post("/process")
 async def process(query: str = Form(...), file: UploadFile = File(...)):
     contents = await file.read()
