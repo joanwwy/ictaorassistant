@@ -2,8 +2,7 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.chains.question_answering import load_qa_chain
-import os
+from langchain.schema import HumanMessage, SystemMessage
 
 app = FastAPI()
 
@@ -24,9 +23,15 @@ async def process(query: str = Form(...), file: UploadFile = File(...)):
     splitter = SemanticChunker(OpenAIEmbeddings())
     docs = splitter.create_documents([text])
 
-    # Query the chunks
-    llm = ChatOpenAI(temperature=0)
-    chain = load_qa_chain(llm, chain_type="stuff")
-    result = chain.run(input_documents=docs, question=query)
+    # Combine chunks into context
+    context = "\n\n".join([doc.page_content for doc in docs])
 
-    return { "result": result }
+    # Query using ChatOpenAI directly
+    llm = ChatOpenAI(temperature=0)
+    messages = [
+        SystemMessage(content="You are a helpful assistant. Use the following document to answer the user's question.\n\n" + context),
+        HumanMessage(content=query)
+    ]
+    response = llm.invoke(messages)
+
+    return { "result": response.content }
