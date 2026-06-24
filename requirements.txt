@@ -3,5 +3,6 @@ uvicorn
 langchain
 langchain-experimental
 langchain-openai
+langchain-community
 python-multipart
 openai
