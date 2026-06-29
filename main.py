@@ -40,17 +40,18 @@ async def process(query: str = Form(...), file: UploadFile = File(...)):
     # 5. Combine only the relevant chunks into the context
     context = "\n\n".join([doc.page_content for doc in relevant_docs])
 
-    # 6. Generate the answer using ChatOpenAI
-    llm = ChatOpenAI(temperature=0, model="gpt-4o-mini") # Specified a cost-effective model
+    # 6. ADJUST YOUR PROMPT HERE ⬇️
+    system_prompt = (
+        "You are an expert financial analyst. Use the following pieces of context to "
+        "answer the user's question. Be concise, use bullet points, and if the answer "
+        "cannot be found in the context, say 'I cannot find that in the document.'\n\n"
+        f"Context:\n{context}"
+    )
+
     messages = [
-        SystemMessage(content=(
-            "You are a helpful assistant. Use the following retrieved pieces of context "
-            "to answer the user's question. If you don't know the answer, just say that "
-            "you don't know.\n\n"
-            f"Context:\n{context}"
-        )),
+        SystemMessage(content=system_prompt),
         HumanMessage(content=query)
     ]
+    
     response = llm.invoke(messages)
-
     return {"result": response.content}
