@@ -9,3 +9,5 @@ openai
 pypdf
 faiss-cpu
 python-docx
+pandas
+openpyxl
