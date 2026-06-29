@@ -6,6 +6,7 @@ from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.vectorstores import FAISS
 from pypdf import PdfReader
+from docx import Document  # Added for Word documents
 
 app = FastAPI()
 
@@ -26,11 +27,13 @@ async def process(query: str = Form(...), file: UploadFile = File(...)):
     contents = await file.read()
     text = ""
 
-    # 2. Extract text based on file type (.txt vs .pdf)
-    if file.filename.endswith(".txt"):
+    # 2. Extract text based on file extension
+    filename_lower = file.filename.lower()
+    
+    if filename_lower.endswith(".txt"):
         text = contents.decode("utf-8")
         
-    elif file.filename.endswith(".pdf"):
+    elif filename_lower.endswith(".pdf"):
         try:
             pdf_stream = io.BytesIO(contents)
             pdf_reader = PdfReader(pdf_stream)
@@ -45,8 +48,22 @@ async def process(query: str = Form(...), file: UploadFile = File(...)):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {str(e)}")
             
+    elif filename_lower.endswith(".docx"):
+        try:
+            doc_stream = io.BytesIO(contents)
+            doc = Document(doc_stream)
+            
+            # Extract text from paragraphs and table cells
+            extracted_paragraphs = [para.text for para in doc.paragraphs if para.text]
+            text = "\n".join(extracted_paragraphs)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to parse Word Document: {str(e)}")
+            
     else:
-        raise HTTPException(status_code=400, detail="Unsupported file format. Please upload a .txt or .pdf file.")
+        raise HTTPException(
+            status_code=400, 
+            detail="Unsupported file format. Please upload a .txt, .pdf, or .docx file."
+        )
 
     # Check if we actually found text to avoid empty document errors
     if not text.strip():
@@ -67,7 +84,7 @@ async def process(query: str = Form(...), file: UploadFile = File(...)):
     # 6. Combine only the relevant chunks into the context
     context = "\n\n".join([doc.page_content for doc in relevant_docs])
 
-    # 7. Initialize the Language Model (Fixed the missing variable error)
+    # 7. Initialize the Language Model
     llm = ChatOpenAI(temperature=0, model="gpt-4o-mini")
 
     # 8. Define the prompt

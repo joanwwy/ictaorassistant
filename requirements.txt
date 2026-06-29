@@ -6,5 +6,6 @@ langchain-openai
 langchain-community
 python-multipart
 openai
-faiss-cpu
 pypdf
+faiss-cpu
+python-docx
