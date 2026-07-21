@@ -193,26 +193,154 @@ def split_documents(raw_docs, embeddings):
 
 def infer_task_type(query: str):
     q = query.lower()
-    if any(w in q for w in ["summary", "summarise", "overview"]):
-        return "summary"
-    if any(w in q for w in ["extract", "list", "identify"]):
-        return "extraction"
-    if any(w in q for w in ["risk", "issue", "gap"]):
-        return "risk"
-    if any(w in q for w in ["cost", "amount", "budget"]):
-        return "financial"
-    return "general"
+
+    if any(w in q for w in ["purpose", "benefit", "theory of change", "problem statement"]):
+        return "aor_purpose"
+
+    if any(w in q for w in ["capex", "opex", "cost"]):
+        return "aor_cost_inputs"
+
+    if any(w in q for w in ["npv", "bcr", "present value", "derive", "compute"]):
+        return "aor_cost_derivation"
+
+    if any(w in q for w in ["fte", "manpower"]):
+        return "aor_manpower"
+
+    return "aor_full"
 
 
 def build_prompt(task_type: str, context: str):
-    return f"""
-You must answer ONLY using the context below.
-If information is missing, say "Not found in document".
+
+    BASE_RULES = """
+You are analysing an ICT Approval of Requirements (AOR) submission.
+
+STRICT RULES:
+- Use ONLY the provided context.
+- Do NOT invent figures, assumptions, or benefits.
+- If information is missing, state clearly "Not found in document".
+- Preserve original wording, figures, and units.
+- Do NOT perform calculations unless explicitly instructed.
+- Cite pockets implicitly through evidence, not opinions.
+"""
+
+    # ---------- (A) PURPOSE & BENEFITS ----------
+    if task_type == "aor_purpose":
+        return f"""
+{BASE_RULES}
+
+Task:
+Extract the PURPOSE of the ICT project and articulate the benefits using the AOR framework.
+
+You MUST structure the answer as:
+1. Problem Statement (what gap or issue the project addresses)
+2. Theory of Change (how the ICT intervention leads to outcomes)
+3. Benefits, grouped strictly into:
+   a. Strategic benefits
+   b. Organisational benefits
+   c. User benefits
+
+Do NOT add benefits not explicitly stated.
+Do NOT generalise.
 
 Context:
 {context}
 """
 
+    # ---------- (B) COST INPUTS ----------
+    if task_type == "aor_cost_inputs":
+        return f"""
+{BASE_RULES}
+
+Task:
+Extract COST INPUTS as per ICT AOR practice.
+
+Return the following fields exactly:
+- CAPEX (one-off)
+- OPEX (total over project duration)
+- Project duration (years)
+- Contingency (5%)
+
+If a field is missing, state "Not found in document".
+
+Do NOT compute derived values.
+Do NOT annualise costs.
+
+Context:
+{context}
+"""
+
+    # ---------- (C) COST & BENEFIT DERIVATION ----------
+    if task_type == "aor_cost_derivation":
+        return f"""
+{BASE_RULES}
+
+Task:
+Derive cost-benefit and manpower-related metrics using the formulas defined in the document.
+
+You may compute ONLY if ALL required inputs are present.
+
+Required outputs:
+- Annual OPEX
+- Annual time saved
+- Annual manpower impact (FTE)
+- Total manpower impact (FTE)
+- Annual net benefit
+- Present Value of benefit
+- Present Value of cost
+- Net Present Value (NPV)
+- Benefit-Cost Ratio (BCR)
+
+Rules:
+- Use 1 FTE = 1,819 hours.
+- Use PV factors explicitly stated in the document.
+- If any input is missing, state which metric cannot be computed and why.
+- Show formulas used inline.
+
+Context:
+{context}
+"""
+
+    # ---------- (D) MANPOWER IMPACT ----------
+    if task_type == "aor_manpower":
+        return f"""
+{BASE_RULES}
+
+Task:
+Extract and articulate MANPOWER IMPACT in FTE terms.
+
+You MUST report:
+1. Source of manpower impact (automation, workflow redesign, new capability)
+2. Annual manpower impact (FTE), if quantified
+3. Lifecycle / total manpower impact (FTE), if stated
+4. Nature of impact:
+   - FTE savings
+   - FTE redeployment / shifts
+   - FTE increases
+
+Do NOT normalise or re-interpret figures.
+If assumptions are stated, reproduce them exactly.
+
+Context:
+{context}
+"""
+
+    # ---------- (E) FULL AOR EXTRACTION ----------
+    return f"""
+{BASE_RULES}
+
+Task:
+Extract a COMPLETE ICT AOR summary covering:
+- Purpose and benefits
+- Cost (CapEx, OpEx)
+- Manpower impact (FTE)
+- Cost-benefit metrics (if available)
+
+Structure strictly along:
+Purpose | Cost | Manpower | Value Assessment
+
+Context:
+{context}
+"""
 
 # ---------- MAIN ENDPOINT ----------
 
