@@ -66,7 +66,7 @@ def extract_pdf(contents: bytes, filename: str):
             )
     return docs
 
-
+#yo
 def extract_docx(contents: bytes, filename: str):
     docs = []
     doc = DocxDocument(io.BytesIO(contents))
