@@ -11,3 +11,4 @@ faiss-cpu
 python-docx
 pandas
 openpyxl
+pypdf
