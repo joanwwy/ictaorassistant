@@ -476,7 +476,7 @@ Field guidance:
 - "user_benefits": user outcomes, user satisfaction, time saved, or ease of use.
 - "capex": one-off capital expenditure.
 - "opex_total": total operating expenditure over the project duration.
-- "project_duration_years": project duration in years.
+- "project_duration_years": implementation period, project duration, contract duration, benefit realisation period, or operational lifespan expressed in years.
 - "contingency_percent": contingency percentage, if stated.
 - "process_or_activity_impacted": process or activity impacted by the ICT project.
 - "time_saved_per_transaction_hours": time saved per transaction in hours.
@@ -592,9 +592,10 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
 
     if not retrieval_query:
         retrieval_query = (
-            "ICT AOR purpose benefits problem statement theory of change "
-            "CAPEX OPEX project duration contingency manpower FTE "
-            "time saved transaction volume NPV BCR present value"
+            "project objective business need benefits "
+            "cost estimate capex opex manpower impact "
+            "fte time saving transaction volume assumptions "
+            "implementation period contract duration"
         )
 
     relevant_docs = retriever.invoke(retrieval_query)
@@ -656,6 +657,7 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
     computed_metrics = compute_aor_metrics(extracted_inputs)
 
     missing_fields = identify_missing_fields(extracted_inputs)
+    submission_complete = len(missing_fields) == 0
 
     explanation_prompt = build_explanation_prompt(
         context=context,
@@ -671,6 +673,7 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
 
     return {
         "status": "ok",
+        "submission_complete": submission_complete,
         "result": final_response.content,
         "extracted_inputs": extracted_inputs,
         "computed_metrics": computed_metrics,
