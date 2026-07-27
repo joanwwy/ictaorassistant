@@ -264,6 +264,11 @@ def compute_aor_metrics(inputs: dict):
     savings_duration_months = inputs.get("savings_duration_months")
     man_hour_rate = inputs.get("man_hour_rate")
 
+    # --- Sanity log ---
+    metrics["debug_project_duration_years"] = project_duration_years  # 👈 here
+    metrics["debug_capex"] = capex
+    metrics["debug_opex"] = opex
+
     hours_per_fte = 1819
     r = 0.06  # 4% nominal discount + 2% inflation
 
@@ -357,24 +362,24 @@ def compute_aor_metrics(inputs: dict):
 
     return metrics
 
-def identify_missing_fields(inputs: dict):
-    required_fields = [
-        "capex",
-        "opex",
-        "project_duration_years",
-        "annual_productivity_time_savings_hours",
-        "annual_manpower_impact_fte",
-        "annual_benefit"
-    ]
+def identify_missing_fields(inputs: dict, metrics: dict):
     missing = []
-    for field in required_fields:
-        value = inputs.get(field)
-        if value is None:
+
+    # These must come from the document — cannot be derived
+    doc_required = ["capex", "opex", "project_duration_years"]
+    for field in doc_required:
+        if inputs.get(field) is None:
             missing.append(field)
-        elif isinstance(value, str) and value.strip() == "":
+
+    # These can be derived — only flag as missing if computation also failed
+    derived_required = {
+        "annual_manpower_impact_fte": metrics.get("annual_manpower_impact_fte"),
+        "annual_benefit": metrics.get("annual_benefit"),
+    }
+    for field, computed_value in derived_required.items():
+        if inputs.get(field) is None and computed_value is None:
             missing.append(field)
-        elif isinstance(value, list) and len(value) == 0:
-            missing.append(field)
+
     return missing
 
 
@@ -421,7 +426,8 @@ Field guidance:
 - "problem_statement": the gap, pain point, or problem being addressed.
 - "capex": one-off capital expenditure (implementation, hardware, cybersecurity, contingency).
 - "opex": total operating expenditure over the project duration (licences, maintenance, cloud support).
-- "project_duration_years": project duration in years (typically 3 to 5 years).
+- "project_duration_years": project duration in years as an integer.   If the document states a date range (e.g. FY25 to FY28), count the  number of full operational years, not the number of financial year 
+  labels. For example, FY25 to FY27 = 3 years, FY25 to FY28 = 4 years.  Prefer an explicitly stated duration (e.g. "3-year contract") over  a derived date range if both are present..
 - "annual_productivity_time_savings_hours": the RAW total hours figure as stated in the document. Do NOT annualise. Do NOT adjust for number of staff or duration.
 - "num_staff": number of staff whose time savings are being measured (e.g. 2 project officers).
 - "savings_duration_months": duration in months over which the raw hours figure was measured (e.g. 9 months). Extract as a number.
