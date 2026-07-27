@@ -28,7 +28,9 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"status": "ok"}
+    return {"status": "ok",
+            "version": "test-commit-1"
+        }
 
 
 # =========================================================
