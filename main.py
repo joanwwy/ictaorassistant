@@ -238,7 +238,10 @@ def clean_extracted_inputs(inputs: dict):
         "annual_productivity_time_savings_hours",
         "annual_manpower_impact_fte",
         "annual_benefit",
-        "pv_factor"
+        "pv_factor",
+        "num_staff",
+        "savings_duration_months",
+        "man_hour_rate"
     ]
     cleaned = dict(inputs)
     for field in numeric_fields:
@@ -251,16 +254,6 @@ def clean_extracted_inputs(inputs: dict):
 # =========================================================
 
 def compute_aor_metrics(inputs: dict):
-    """
-    Follows the CAAS AOR template formulas:
-      - annual_benefit = annual_manpower_impact_fte * 1819 * 95  (if not explicitly provided)
-      - total_benefits (PV_benefit) = annual_benefit * pv_factor
-      - annual_cost = capex / project_duration_years + opex / project_duration_years
-        (i.e. annualised total spend; template uses opex as total-over-duration)
-      - total_costs (PV_cost) = annual_cost * pv_factor
-      - net_present_value = PV_benefit - PV_cost
-      - benefit_cost_ratio = PV_benefit / PV_cost
-    """
     metrics = {}
 
     capex = inputs.get("capex")
@@ -270,52 +263,65 @@ def compute_aor_metrics(inputs: dict):
     annual_manpower_impact_fte = inputs.get("annual_manpower_impact_fte")
     annual_benefit = inputs.get("annual_benefit")
     pv_factor = inputs.get("pv_factor")
+    num_staff = inputs.get("num_staff")
+    savings_duration_months = inputs.get("savings_duration_months")
+    man_hour_rate = inputs.get("man_hour_rate")
 
-    hours_per_fte = 1819
-    benefit_per_fte_dollar = 95
+    hours_per_fte = 1819  # standard, not document-specific
 
-    # --- Annual benefit ---
-    # Use explicitly stated value first; otherwise derive from FTE * $95
-    if annual_benefit is not None:
-        metrics["annual_benefit"] = annual_benefit
-    elif annual_manpower_impact_fte is not None:
-        metrics["annual_benefit"] = round(annual_manpower_impact_fte * benefit_per_fte_dollar, 2)
+    # --- Annualised hours ---
+    # Annualise raw hours if duration and staff count are available
+    if annual_productivity_time_savings_hours is not None:
+        duration_months = savings_duration_months if savings_duration_months else 12
+        annualised_hours = round(
+            annual_productivity_time_savings_hours * (12 / duration_months), 2
+        )
+        metrics["annualised_productivity_hours"] = annualised_hours
     else:
-        metrics["annual_benefit"] = None
+        metrics["annualised_productivity_hours"] = None
 
     # --- Annual manpower impact (FTE) ---
-    # Use explicitly stated value first; otherwise derive from hours / 1819
     if annual_manpower_impact_fte is not None:
         metrics["annual_manpower_impact_fte"] = annual_manpower_impact_fte
-    elif annual_productivity_time_savings_hours is not None:
+    elif metrics["annualised_productivity_hours"] is not None:
         metrics["annual_manpower_impact_fte"] = round(
-            annual_productivity_time_savings_hours / hours_per_fte, 2
+            metrics["annualised_productivity_hours"] / hours_per_fte, 2
         )
     else:
         metrics["annual_manpower_impact_fte"] = None
 
-    # --- Annual cost ---
-    # Template treats opex as total-over-duration, so annualise both capex and opex
-    if capex is not None and opex is not None and project_duration_years and project_duration_years != 0:
-        metrics["annual_cost"] = round((capex + opex) / project_duration_years, 2)
-    elif opex is not None and project_duration_years and project_duration_years != 0:
-        metrics["annual_cost"] = round(opex / project_duration_years, 2)
+    # --- Annual benefit ---
+    # Use explicitly stated value first; otherwise derive from FTE * hours_per_fte * man_hour_rate
+    if annual_benefit is not None:
+        metrics["annual_benefit"] = annual_benefit
+    elif metrics["annual_manpower_impact_fte"] is not None and man_hour_rate is not None:
+        metrics["annual_benefit"] = round(
+            metrics["annual_manpower_impact_fte"] * hours_per_fte * man_hour_rate, 2
+        )
     else:
-        metrics["annual_cost"] = None
+        metrics["annual_benefit"] = None
 
-    # --- Total benefits: PV_benefit = annual_benefit * pv_factor ---
+    # --- Total cost = CAPEX + OPEX (total spend, not annualised) ---
+    if capex is not None and opex is not None:
+        metrics["total_cost"] = round(capex + opex, 2)
+    elif opex is not None:
+        metrics["total_cost"] = round(opex, 2)
+    else:
+        metrics["total_cost"] = None
+
+    # --- Total benefits (PV) ---
     if metrics["annual_benefit"] is not None and pv_factor is not None:
         metrics["total_benefits_pv"] = round(metrics["annual_benefit"] * pv_factor, 2)
     else:
         metrics["total_benefits_pv"] = None
 
-    # --- Total costs: PV_cost = annual_cost * pv_factor ---
-    if metrics["annual_cost"] is not None and pv_factor is not None:
-        metrics["total_costs_pv"] = round(metrics["annual_cost"] * pv_factor, 2)
+    # --- Total costs (PV) ---
+    if metrics["total_cost"] is not None and pv_factor is not None:
+        metrics["total_costs_pv"] = round(metrics["total_cost"] * pv_factor, 2)
     else:
         metrics["total_costs_pv"] = None
 
-    # --- Net present value ---
+    # --- NPV ---
     if metrics["total_benefits_pv"] is not None and metrics["total_costs_pv"] is not None:
         metrics["net_present_value"] = round(
             metrics["total_benefits_pv"] - metrics["total_costs_pv"], 2
@@ -323,7 +329,7 @@ def compute_aor_metrics(inputs: dict):
     else:
         metrics["net_present_value"] = None
 
-    # --- Benefit-cost ratio ---
+    # --- BCR ---
     if (
         metrics["total_benefits_pv"] is not None
         and metrics["total_costs_pv"] is not None
@@ -372,6 +378,7 @@ Your task is to extract RAW INPUTS only.
 Do NOT perform calculations.
 Do NOT infer missing values.
 Do NOT invent figures, benefits, assumptions, or dates.
+Do NOT annualise any hours figures.
 
 Return ONLY a valid JSON object.
 Do not wrap the JSON in markdown.
@@ -387,6 +394,9 @@ Return exactly this JSON structure:
   "opex": null,
   "project_duration_years": null,
   "annual_productivity_time_savings_hours": null,
+  "num_staff": null,
+  "savings_duration_months": null,
+  "man_hour_rate": null,
   "annual_manpower_impact_fte": null,
   "annual_benefit": null,
   "pv_factor": null,
@@ -401,9 +411,12 @@ Field guidance:
 - "capex": one-off capital expenditure (implementation, hardware, cybersecurity, contingency).
 - "opex": total operating expenditure over the project duration (licences, maintenance, cloud support).
 - "project_duration_years": project duration in years (typically 3 to 5 years).
-- "annual_productivity_time_savings_hours": annual productivity time savings in hours (compare current vs post-implementation).
-- "annual_manpower_impact_fte": annual manpower impact in FTE (productivity time savings per year / 1,819 hours).
-- "annual_benefit": annual benefit in dollars (annual manpower impact * $95), if explicitly stated.
+- "annual_productivity_time_savings_hours": the RAW total hours figure as stated in the document. Do NOT annualise. Do NOT adjust for number of staff or duration.
+- "num_staff": number of staff whose time savings are being measured (e.g. 2 project officers).
+- "savings_duration_months": duration in months over which the raw hours figure was measured (e.g. 9 months). Extract as a number.
+- "man_hour_rate": the man-hour rate in dollars per hour as explicitly stated in the document (e.g. 98). Do NOT default to any standard rate if not found.
+- "annual_manpower_impact_fte": annual manpower impact in FTE, only if explicitly stated as a final FTE figure in the document.
+- "annual_benefit": annual benefit in dollars, only if explicitly stated as a final dollar benefit figure in the document.
 - "pv_factor": present value factor, if explicitly stated (standard discount rate 4%, inflation rate 2%).
 - "key_assumptions": assumptions explicitly stated in the document.
 - "source_evidence": short evidence snippets from the context.
@@ -412,7 +425,7 @@ Rules:
 - Use null for missing single-value fields.
 - Use [] for missing list fields.
 - Preserve figures and wording as far as possible.
-- Do NOT calculate total benefits, total costs, NPV, or BCR yourself.
+- Do NOT calculate total benefits, total costs, NPV, BCR, annualised hours, or FTE yourself.
 
 Context:
 {context}
