@@ -238,7 +238,6 @@ def clean_extracted_inputs(inputs: dict):
         "annual_productivity_time_savings_hours",
         "annual_manpower_impact_fte",
         "annual_benefit",
-        "pv_factor",
         "num_staff",
         "savings_duration_months",
         "man_hour_rate"
@@ -262,21 +261,31 @@ def compute_aor_metrics(inputs: dict):
     annual_productivity_time_savings_hours = inputs.get("annual_productivity_time_savings_hours")
     annual_manpower_impact_fte = inputs.get("annual_manpower_impact_fte")
     annual_benefit = inputs.get("annual_benefit")
-    pv_factor = inputs.get("pv_factor")
-    num_staff = inputs.get("num_staff")
     savings_duration_months = inputs.get("savings_duration_months")
     man_hour_rate = inputs.get("man_hour_rate")
 
-    hours_per_fte = 1819  # standard, not document-specific
+    hours_per_fte = 1819
+    r = 0.06  # 4% nominal discount + 2% inflation
 
-    # --- Annualised hours ---
-    # Annualise raw hours if duration and staff count are available
+    # --- PV factor (annuity, computed from project duration) ---
+    if project_duration_years is not None and project_duration_years > 0:
+        pv_factor = (1 - (1 + r) ** -project_duration_years) / r
+        metrics["pv_factor"] = round(pv_factor, 4)
+    else:
+        metrics["pv_factor"] = None
+
+    # --- Annual OPEX (OPEX spread evenly over project duration) ---
+    if opex is not None and project_duration_years is not None and project_duration_years > 0:
+        metrics["annual_opex"] = round(opex / project_duration_years, 2)
+    else:
+        metrics["annual_opex"] = None
+
+    # --- Annualised productivity hours ---
     if annual_productivity_time_savings_hours is not None:
         duration_months = savings_duration_months if savings_duration_months else 12
-        annualised_hours = round(
+        metrics["annualised_productivity_hours"] = round(
             annual_productivity_time_savings_hours * (12 / duration_months), 2
         )
-        metrics["annualised_productivity_hours"] = annualised_hours
     else:
         metrics["annualised_productivity_hours"] = None
 
@@ -285,13 +294,12 @@ def compute_aor_metrics(inputs: dict):
         metrics["annual_manpower_impact_fte"] = annual_manpower_impact_fte
     elif metrics["annualised_productivity_hours"] is not None:
         metrics["annual_manpower_impact_fte"] = round(
-            metrics["annualised_productivity_hours"] / hours_per_fte, 2
+            metrics["annualised_productivity_hours"] / hours_per_fte, 4
         )
     else:
         metrics["annual_manpower_impact_fte"] = None
 
     # --- Annual benefit ---
-    # Use explicitly stated value first; otherwise derive from FTE * hours_per_fte * man_hour_rate
     if annual_benefit is not None:
         metrics["annual_benefit"] = annual_benefit
     elif metrics["annual_manpower_impact_fte"] is not None and man_hour_rate is not None:
@@ -301,7 +309,7 @@ def compute_aor_metrics(inputs: dict):
     else:
         metrics["annual_benefit"] = None
 
-    # --- Total cost = CAPEX + OPEX (total spend, not annualised) ---
+    # --- Total cost (simple sum, for reference only) ---
     if capex is not None and opex is not None:
         metrics["total_cost"] = round(capex + opex, 2)
     elif opex is not None:
@@ -309,19 +317,25 @@ def compute_aor_metrics(inputs: dict):
     else:
         metrics["total_cost"] = None
 
-    # --- Total benefits (PV) ---
-    if metrics["annual_benefit"] is not None and pv_factor is not None:
-        metrics["total_benefits_pv"] = round(metrics["annual_benefit"] * pv_factor, 2)
+    # --- Total benefits PV (annual benefit discounted as annuity) ---
+    if metrics["annual_benefit"] is not None and metrics["pv_factor"] is not None:
+        metrics["total_benefits_pv"] = round(
+            metrics["annual_benefit"] * metrics["pv_factor"], 2
+        )
     else:
         metrics["total_benefits_pv"] = None
 
-    # --- Total costs (PV) ---
-    if metrics["total_cost"] is not None and pv_factor is not None:
-        metrics["total_costs_pv"] = round(metrics["total_cost"] * pv_factor, 2)
+    # --- Total costs PV ---
+    # CAPEX is already a present value (one-off upfront cost)
+    # OPEX is treated as an annuity discounted over project duration
+    if capex is not None and metrics["annual_opex"] is not None and metrics["pv_factor"] is not None:
+        metrics["total_costs_pv"] = round(
+            capex + (metrics["annual_opex"] * metrics["pv_factor"]), 2
+        )
     else:
         metrics["total_costs_pv"] = None
 
-    # --- NPV ---
+    # --- Net Present Value ---
     if metrics["total_benefits_pv"] is not None and metrics["total_costs_pv"] is not None:
         metrics["net_present_value"] = round(
             metrics["total_benefits_pv"] - metrics["total_costs_pv"], 2
@@ -329,20 +343,19 @@ def compute_aor_metrics(inputs: dict):
     else:
         metrics["net_present_value"] = None
 
-    # --- BCR ---
+    # --- Benefit-Cost Ratio ---
     if (
         metrics["total_benefits_pv"] is not None
         and metrics["total_costs_pv"] is not None
         and metrics["total_costs_pv"] != 0
     ):
         metrics["benefit_cost_ratio"] = round(
-            metrics["total_benefits_pv"] / metrics["total_costs_pv"], 2
+            metrics["total_benefits_pv"] / metrics["total_costs_pv"], 4
         )
     else:
         metrics["benefit_cost_ratio"] = None
 
     return metrics
-
 
 def identify_missing_fields(inputs: dict):
     required_fields = [
@@ -351,8 +364,7 @@ def identify_missing_fields(inputs: dict):
         "project_duration_years",
         "annual_productivity_time_savings_hours",
         "annual_manpower_impact_fte",
-        "annual_benefit",
-        "pv_factor"
+        "annual_benefit"
     ]
     missing = []
     for field in required_fields:
@@ -399,7 +411,6 @@ Return exactly this JSON structure:
   "man_hour_rate": null,
   "annual_manpower_impact_fte": null,
   "annual_benefit": null,
-  "pv_factor": null,
   "key_assumptions": [],
   "source_evidence": []
 }}
@@ -417,7 +428,6 @@ Field guidance:
 - "man_hour_rate": the man-hour rate in dollars per hour as explicitly stated in the document (e.g. 98). Do NOT default to any standard rate if not found.
 - "annual_manpower_impact_fte": annual manpower impact in FTE, only if explicitly stated as a final FTE figure in the document.
 - "annual_benefit": annual benefit in dollars, only if explicitly stated as a final dollar benefit figure in the document.
-- "pv_factor": present value factor, if explicitly stated (standard discount rate 4%, inflation rate 2%).
 - "key_assumptions": assumptions explicitly stated in the document.
 - "source_evidence": short evidence snippets from the context.
 
