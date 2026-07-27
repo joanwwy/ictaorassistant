@@ -46,10 +46,6 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
         const { userInput } = req.body;
         const file = req.file;
 
-        if (!userInput) {
-            return res.render('pages/home', { error: 'Please provide an input.', result: null });
-        }
-
         if (!file) {
             return res.render('pages/home', { error: 'Please attach a file.', result: null });
         }
