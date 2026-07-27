@@ -28,9 +28,7 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"status": "ok",
-            "version": "test-commit-1"
-        }
+    return {"status": "ok", "version": "test-commit-1"}
 
 
 # =========================================================
@@ -39,7 +37,6 @@ async def root():
 
 def extract_txt(contents: bytes, filename: str):
     text = contents.decode("utf-8", errors="ignore")
-
     return [
         LCDocument(
             page_content=text,
@@ -54,14 +51,11 @@ def extract_txt(contents: bytes, filename: str):
 
 def extract_pdf(contents: bytes, filename: str):
     docs = []
-
     try:
         pdf_stream = io.BytesIO(contents)
         pdf_reader = PdfReader(pdf_stream)
-
         for page_number, page in enumerate(pdf_reader.pages, start=1):
             page_text = page.extract_text() or ""
-
             if page_text.strip():
                 docs.append(
                     LCDocument(
@@ -74,28 +68,20 @@ def extract_pdf(contents: bytes, filename: str):
                         }
                     )
                 )
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to parse PDF: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {str(e)}")
     return docs
 
 
 def extract_docx(contents: bytes, filename: str):
     docs = []
-
     try:
         doc = DocxDocument(io.BytesIO(contents))
-
         paragraphs = [
             para.text.strip()
             for para in doc.paragraphs
             if para.text.strip()
         ]
-
         if paragraphs:
             docs.append(
                 LCDocument(
@@ -107,16 +93,12 @@ def extract_docx(contents: bytes, filename: str):
                     }
                 )
             )
-
         for table_index, table in enumerate(doc.tables, start=1):
             rows = []
-
             for row in table.rows:
                 cells = [cell.text.strip() for cell in row.cells]
-
                 if any(cells):
                     rows.append(" | ".join(cells))
-
             if rows:
                 docs.append(
                     LCDocument(
@@ -129,28 +111,19 @@ def extract_docx(contents: bytes, filename: str):
                         }
                     )
                 )
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to parse Word Document: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=f"Failed to parse Word Document: {str(e)}")
     return docs
 
 
 def extract_excel(contents: bytes, filename: str):
     docs = []
-
     try:
         excel = pd.read_excel(io.BytesIO(contents), sheet_name=None)
-
         for sheet_name, df in excel.items():
             if df.empty:
                 continue
-
             df.columns = [str(col).strip() for col in df.columns]
-
             docs.append(
                 LCDocument(
                     page_content=df.to_csv(index=False),
@@ -164,10 +137,8 @@ def extract_excel(contents: bytes, filename: str):
                     }
                 )
             )
-
             for idx, row in df.iterrows():
                 row_dict = row.dropna().to_dict()
-
                 if row_dict:
                     docs.append(
                         LCDocument(
@@ -181,31 +152,21 @@ def extract_excel(contents: bytes, filename: str):
                             }
                         )
                     )
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to parse Excel Document: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=f"Failed to parse Excel Document: {str(e)}")
     return docs
 
 
 def extract_documents(contents: bytes, filename: str):
     filename_lower = filename.lower()
-
     if filename_lower.endswith(".txt"):
         return extract_txt(contents, filename)
-
     if filename_lower.endswith(".pdf"):
         return extract_pdf(contents, filename)
-
     if filename_lower.endswith(".docx"):
         return extract_docx(contents, filename)
-
     if filename_lower.endswith((".xlsx", ".xls")):
         return extract_excel(contents, filename)
-
     raise HTTPException(
         status_code=400,
         detail="Unsupported file format. Please upload .txt, .pdf, .docx, .xlsx, or .xls files."
@@ -219,21 +180,17 @@ def extract_documents(contents: bytes, filename: str):
 def split_documents(raw_docs, embeddings):
     splitter = SemanticChunker(embeddings)
     result = []
-
     for doc in raw_docs:
         if doc.metadata.get("content_type") == "row":
             result.append(doc)
             continue
-
         chunks = splitter.create_documents(
             [doc.page_content],
             metadatas=[doc.metadata]
         )
-
         for i, chunk in enumerate(chunks, start=1):
             chunk.metadata["chunk_index"] = i
             result.append(chunk)
-
     return result
 
 
@@ -246,76 +203,46 @@ def parse_json_from_llm(text: str):
     cleaned = cleaned.replace("```json", "")
     cleaned = cleaned.replace("```", "")
     cleaned = cleaned.strip()
-
     try:
         return json.loads(cleaned)
     except Exception:
         pass
-
     match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-
     if match:
         return json.loads(match.group(0))
-
     raise ValueError("No valid JSON object found in LLM response.")
 
 
 def to_number(value):
     if value is None:
         return None
-
     if isinstance(value, (int, float)):
         return value
-
     if isinstance(value, str):
         cleaned = value.strip()
-
-        if cleaned.lower() in [
-            "not found",
-            "not found in document",
-            "na",
-            "n/a",
-            "none",
-            "null",
-            ""
-        ]:
+        if cleaned.lower() in ["not found", "not found in document", "na", "n/a", "none", "null", ""]:
             return None
-
-        cleaned = cleaned.replace("S$", "")
-        cleaned = cleaned.replace("$", "")
-        cleaned = cleaned.replace(",", "")
-        cleaned = cleaned.replace("%", "")
-
+        cleaned = cleaned.replace("S$", "").replace("$", "").replace(",", "").replace("%", "")
         match = re.search(r"-?\d+(\.\d+)?", cleaned)
-
         if match:
             number = float(match.group(0))
-
-            if number.is_integer():
-                return int(number)
-
-            return number
-
+            return int(number) if number.is_integer() else number
     return None
 
 
 def clean_extracted_inputs(inputs: dict):
     numeric_fields = [
         "capex",
-        "opex_total",
+        "opex",
         "project_duration_years",
-        "contingency_percent",
-        "time_saved_per_transaction_hours",
-        "annual_transaction_volume",
-        "annual_net_benefit",
+        "annual_productivity_time_savings_hours",
+        "annual_manpower_impact_fte",
+        "annual_benefit",
         "pv_factor"
     ]
-
     cleaned = dict(inputs)
-
     for field in numeric_fields:
         cleaned[field] = to_number(cleaned.get(field))
-
     return cleaned
 
 
@@ -324,67 +251,87 @@ def clean_extracted_inputs(inputs: dict):
 # =========================================================
 
 def compute_aor_metrics(inputs: dict):
+    """
+    Follows the CAAS AOR template formulas:
+      - annual_benefit = annual_manpower_impact_fte * 1819 * 95  (if not explicitly provided)
+      - total_benefits (PV_benefit) = annual_benefit * pv_factor
+      - annual_cost = capex / project_duration_years + opex / project_duration_years
+        (i.e. annualised total spend; template uses opex as total-over-duration)
+      - total_costs (PV_cost) = annual_cost * pv_factor
+      - net_present_value = PV_benefit - PV_cost
+      - benefit_cost_ratio = PV_benefit / PV_cost
+    """
     metrics = {}
 
-    hours_per_fte = 1819
-
     capex = inputs.get("capex")
-    opex_total = inputs.get("opex_total")
+    opex = inputs.get("opex")
     project_duration_years = inputs.get("project_duration_years")
-    time_saved_per_transaction_hours = inputs.get("time_saved_per_transaction_hours")
-    annual_transaction_volume = inputs.get("annual_transaction_volume")
-    annual_net_benefit = inputs.get("annual_net_benefit")
+    annual_productivity_time_savings_hours = inputs.get("annual_productivity_time_savings_hours")
+    annual_manpower_impact_fte = inputs.get("annual_manpower_impact_fte")
+    annual_benefit = inputs.get("annual_benefit")
     pv_factor = inputs.get("pv_factor")
 
-    if time_saved_per_transaction_hours is not None and annual_transaction_volume is not None:
-        annual_time_saved = time_saved_per_transaction_hours * annual_transaction_volume
-        annual_manpower_impact_fte = annual_time_saved / hours_per_fte
+    hours_per_fte = 1819
+    benefit_per_fte_dollar = 95
 
-        metrics["annual_time_saved_hours"] = round(annual_time_saved, 2)
-        metrics["annual_manpower_impact_fte"] = round(annual_manpower_impact_fte, 2)
+    # --- Annual benefit ---
+    # Use explicitly stated value first; otherwise derive from FTE * $95
+    if annual_benefit is not None:
+        metrics["annual_benefit"] = annual_benefit
+    elif annual_manpower_impact_fte is not None:
+        metrics["annual_benefit"] = round(annual_manpower_impact_fte * benefit_per_fte_dollar, 2)
     else:
-        metrics["annual_time_saved_hours"] = None
-        metrics["annual_manpower_impact_fte"] = None
+        metrics["annual_benefit"] = None
 
-    if metrics["annual_manpower_impact_fte"] is not None and project_duration_years is not None:
-        metrics["total_manpower_impact_fte"] = round(
-            metrics["annual_manpower_impact_fte"] * project_duration_years,
-            2
+    # --- Annual manpower impact (FTE) ---
+    # Use explicitly stated value first; otherwise derive from hours / 1819
+    if annual_manpower_impact_fte is not None:
+        metrics["annual_manpower_impact_fte"] = annual_manpower_impact_fte
+    elif annual_productivity_time_savings_hours is not None:
+        metrics["annual_manpower_impact_fte"] = round(
+            annual_productivity_time_savings_hours / hours_per_fte, 2
         )
     else:
-        metrics["total_manpower_impact_fte"] = None
+        metrics["annual_manpower_impact_fte"] = None
 
-    if opex_total is not None and project_duration_years is not None and project_duration_years != 0:
-        annual_opex = opex_total / project_duration_years
-        metrics["annual_opex"] = round(annual_opex, 2)
+    # --- Annual cost ---
+    # Template treats opex as total-over-duration, so annualise both capex and opex
+    if capex is not None and opex is not None and project_duration_years and project_duration_years != 0:
+        metrics["annual_cost"] = round((capex + opex) / project_duration_years, 2)
+    elif opex is not None and project_duration_years and project_duration_years != 0:
+        metrics["annual_cost"] = round(opex / project_duration_years, 2)
     else:
-        metrics["annual_opex"] = None
+        metrics["annual_cost"] = None
 
-    if annual_net_benefit is not None and pv_factor is not None:
-        present_value_of_benefit = annual_net_benefit * pv_factor
-        metrics["present_value_of_benefit"] = round(present_value_of_benefit, 2)
+    # --- Total benefits: PV_benefit = annual_benefit * pv_factor ---
+    if metrics["annual_benefit"] is not None and pv_factor is not None:
+        metrics["total_benefits_pv"] = round(metrics["annual_benefit"] * pv_factor, 2)
     else:
-        metrics["present_value_of_benefit"] = None
+        metrics["total_benefits_pv"] = None
 
-    if capex is not None and metrics["annual_opex"] is not None and pv_factor is not None:
-        present_value_of_cost = capex + (metrics["annual_opex"] * pv_factor)
-        metrics["present_value_of_cost"] = round(present_value_of_cost, 2)
+    # --- Total costs: PV_cost = annual_cost * pv_factor ---
+    if metrics["annual_cost"] is not None and pv_factor is not None:
+        metrics["total_costs_pv"] = round(metrics["annual_cost"] * pv_factor, 2)
     else:
-        metrics["present_value_of_cost"] = None
+        metrics["total_costs_pv"] = None
 
-    if metrics["present_value_of_benefit"] is not None and metrics["present_value_of_cost"] is not None:
-        net_present_value = metrics["present_value_of_benefit"] - metrics["present_value_of_cost"]
-        metrics["net_present_value"] = round(net_present_value, 2)
+    # --- Net present value ---
+    if metrics["total_benefits_pv"] is not None and metrics["total_costs_pv"] is not None:
+        metrics["net_present_value"] = round(
+            metrics["total_benefits_pv"] - metrics["total_costs_pv"], 2
+        )
     else:
         metrics["net_present_value"] = None
 
+    # --- Benefit-cost ratio ---
     if (
-        metrics["present_value_of_benefit"] is not None
-        and metrics["present_value_of_cost"] is not None
-        and metrics["present_value_of_cost"] != 0
+        metrics["total_benefits_pv"] is not None
+        and metrics["total_costs_pv"] is not None
+        and metrics["total_costs_pv"] != 0
     ):
-        benefit_cost_ratio = metrics["present_value_of_benefit"] / metrics["present_value_of_cost"]
-        metrics["benefit_cost_ratio"] = round(benefit_cost_ratio, 2)
+        metrics["benefit_cost_ratio"] = round(
+            metrics["total_benefits_pv"] / metrics["total_costs_pv"], 2
+        )
     else:
         metrics["benefit_cost_ratio"] = None
 
@@ -393,34 +340,23 @@ def compute_aor_metrics(inputs: dict):
 
 def identify_missing_fields(inputs: dict):
     required_fields = [
-        "project_title",
-        "problem_statement",
-        "theory_of_change",
-        "strategic_benefits",
-        "organisational_benefits",
-        "user_benefits",
         "capex",
-        "opex_total",
+        "opex",
         "project_duration_years",
-        "process_or_activity_impacted",
-        "time_saved_per_transaction_hours",
-        "annual_transaction_volume"
+        "annual_productivity_time_savings_hours",
+        "annual_manpower_impact_fte",
+        "annual_benefit",
+        "pv_factor"
     ]
-
     missing = []
-
     for field in required_fields:
         value = inputs.get(field)
-
         if value is None:
             missing.append(field)
-
         elif isinstance(value, str) and value.strip() == "":
             missing.append(field)
-
         elif isinstance(value, list) and len(value) == 0:
             missing.append(field)
-
     return missing
 
 
@@ -430,7 +366,7 @@ def identify_missing_fields(inputs: dict):
 
 def build_extraction_prompt(context: str):
     return f"""
-You are analysing an ICT Approval of Requirements AOR submission.
+You are analysing an ICT Approval of Requirements (AOR) submission using the CAAS AOR template.
 
 Your task is to extract RAW INPUTS only.
 Do NOT perform calculations.
@@ -447,23 +383,13 @@ Return exactly this JSON structure:
   "project_title": null,
   "purpose": null,
   "problem_statement": null,
-  "theory_of_change": null,
-  "strategic_benefits": [],
-  "organisational_benefits": [],
-  "user_benefits": [],
   "capex": null,
-  "opex_total": null,
+  "opex": null,
   "project_duration_years": null,
-  "contingency_percent": null,
-  "process_or_activity_impacted": null,
-  "time_saved_per_transaction_hours": null,
-  "annual_transaction_volume": null,
-  "annual_net_benefit": null,
+  "annual_productivity_time_savings_hours": null,
+  "annual_manpower_impact_fte": null,
+  "annual_benefit": null,
   "pv_factor": null,
-  "manpower_design_intent": null,
-  "fte_savings": null,
-  "fte_redeployment": null,
-  "fte_increase": null,
   "key_assumptions": [],
   "source_evidence": []
 }}
@@ -471,24 +397,14 @@ Return exactly this JSON structure:
 Field guidance:
 - "project_title": title or name of the ICT project.
 - "purpose": what the ICT project seeks to achieve.
-- "problem_statement": the gap, pain point, issue, or problem being addressed.
-- "theory_of_change": how the ICT intervention leads to the intended outcomes.
-- "strategic_benefits": contribution to WoG priorities, MFDP priorities, or public service delivery.
-- "organisational_benefits": alignment with organisation goals, CAAS Tech Stack, productivity, efficiency, data quality, or decision-making.
-- "user_benefits": user outcomes, user satisfaction, time saved, or ease of use.
-- "capex": one-off capital expenditure.
-- "opex_total": total operating expenditure over the project duration.
-- "project_duration_years": implementation period, project duration, contract duration, benefit realisation period, or operational lifespan expressed in years.
-- "contingency_percent": contingency percentage, if stated.
-- "process_or_activity_impacted": process or activity impacted by the ICT project.
-- "time_saved_per_transaction_hours": time saved per transaction in hours.
-- "annual_transaction_volume": number of transactions per year.
-- "annual_net_benefit": annual net benefit if explicitly stated.
-- "pv_factor": present value factor if explicitly stated.
-- "manpower_design_intent": whether the project is intended to save manpower, redeploy manpower, increase manpower, or create new capability.
-- "fte_savings": FTE savings if explicitly stated.
-- "fte_redeployment": FTE redeployment or shift if explicitly stated.
-- "fte_increase": FTE increase if explicitly stated.
+- "problem_statement": the gap, pain point, or problem being addressed.
+- "capex": one-off capital expenditure (implementation, hardware, cybersecurity, contingency).
+- "opex": total operating expenditure over the project duration (licences, maintenance, cloud support).
+- "project_duration_years": project duration in years (typically 3 to 5 years).
+- "annual_productivity_time_savings_hours": annual productivity time savings in hours (compare current vs post-implementation).
+- "annual_manpower_impact_fte": annual manpower impact in FTE (productivity time savings per year / 1,819 hours).
+- "annual_benefit": annual benefit in dollars (annual manpower impact * $95), if explicitly stated.
+- "pv_factor": present value factor, if explicitly stated (standard discount rate 4%, inflation rate 2%).
 - "key_assumptions": assumptions explicitly stated in the document.
 - "source_evidence": short evidence snippets from the context.
 
@@ -496,8 +412,7 @@ Rules:
 - Use null for missing single-value fields.
 - Use [] for missing list fields.
 - Preserve figures and wording as far as possible.
-- Do NOT calculate annual time saved, manpower impact, NPV, or BCR.
-- Do NOT assume that benefits exist unless stated.
+- Do NOT calculate total benefits, total costs, NPV, or BCR yourself.
 
 Context:
 {context}
@@ -506,7 +421,7 @@ Context:
 
 def build_explanation_prompt(context: str, inputs: dict, metrics: dict, missing_fields: list):
     return f"""
-You are reviewing an ICT Approval of Requirements AOR submission.
+You are reviewing an ICT Approval of Requirements (AOR) submission using the CAAS AOR template.
 
 Use the extracted inputs and computed metrics below.
 Do NOT recompute any numbers.
@@ -527,37 +442,27 @@ Context:
 
 Return the assessment in this structure:
 
-1. Purpose and Benefits
-- Problem statement
-- Theory of change
-- Strategic benefits
-- Organisational benefits
-- User benefits
+1. Purpose and Problem Statement
 
 2. Cost Inputs
 - CAPEX
-- OPEX
+- OPEX (total over project duration)
 - Project duration
-- Contingency
 
-3. Manpower Impact
-- Process or activity impacted
-- Time saved per transaction
-- Annual transaction volume
-- Annual time saved
-- Annual manpower impact
-- Total manpower impact
-- Nature of FTE impact
+3. Benefits
+- Annual productivity time savings (hours)
+- Annual manpower impact (FTE)
+- Annual benefit ($)
 
 4. Value Assessment
-- Present value of benefit
-- Present value of cost
+- Total benefits (PV_benefit)
+- Total costs (PV_cost)
 - Net present value
 - Benefit-cost ratio
-- Whether the case appears complete for AOR review
+- Whether the submission appears complete for AOR review
 
 5. Missing Information / Follow-up Required
-- List missing inputs that prevent assessment or computation.
+- List any missing inputs that prevent assessment or computation.
 """
 
 
@@ -578,7 +483,6 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
         )
 
     embeddings = OpenAIEmbeddings()
-
     docs = split_documents(raw_docs, embeddings)
 
     if not docs:
@@ -590,55 +494,39 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
     store = FAISS.from_documents(docs, embeddings)
     retriever = store.as_retriever(search_kwargs={"k": 8})
 
-    retrieval_query = query.strip()
-
-    if not retrieval_query:
-        retrieval_query = (
-            "project objective business need benefits "
-            "cost estimate capex opex manpower impact "
-            "fte time saving transaction volume assumptions "
-            "implementation period contract duration"
-        )
+    retrieval_query = query.strip() or (
+        "project objective business need benefits "
+        "cost estimate capex opex manpower impact "
+        "fte time saving annual benefit pv factor "
+        "implementation period project duration"
+    )
 
     relevant_docs = retriever.invoke(retrieval_query)
 
     context_blocks = []
-
     for i, doc in enumerate(relevant_docs, start=1):
         metadata = doc.metadata
-
         source_parts = []
-
         if metadata.get("filename"):
             source_parts.append(f"File: {metadata.get('filename')}")
-
         if metadata.get("page"):
             source_parts.append(f"Page: {metadata.get('page')}")
-
         if metadata.get("sheet"):
             source_parts.append(f"Sheet: {metadata.get('sheet')}")
-
         if metadata.get("table_index"):
             source_parts.append(f"Table: {metadata.get('table_index')}")
-
         if metadata.get("row_index"):
             source_parts.append(f"Row: {metadata.get('row_index')}")
-
         if metadata.get("chunk_index"):
             source_parts.append(f"Chunk: {metadata.get('chunk_index')}")
-
         source_label = " | ".join(source_parts)
-
-        context_blocks.append(
-            f"[Pocket {i} | {source_label}]\n{doc.page_content}"
-        )
+        context_blocks.append(f"[Chunk {i} | {source_label}]\n{doc.page_content}")
 
     context = "\n\n".join(context_blocks)
 
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
     extraction_prompt = build_extraction_prompt(context)
-
     extraction_response = llm.invoke([
         SystemMessage(content=extraction_prompt),
         HumanMessage(content="Extract ICT AOR inputs from the context.")
@@ -647,7 +535,6 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
     try:
         extracted_inputs_raw = parse_json_from_llm(extraction_response.content)
         extracted_inputs = clean_extracted_inputs(extracted_inputs_raw)
-
     except Exception as e:
         return {
             "status": "error",
@@ -657,7 +544,6 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
         }
 
     computed_metrics = compute_aor_metrics(extracted_inputs)
-
     missing_fields = identify_missing_fields(extracted_inputs)
     submission_complete = len(missing_fields) == 0
 
