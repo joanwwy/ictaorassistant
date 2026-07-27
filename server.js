@@ -66,7 +66,7 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
 
         // Build form data to send to Python backend
         const formData = new FormData();
-        formData.append('query', userInput);
+        formData.append('query', userInput || '');
         formData.append('file', fs.createReadStream(file.path), file.originalname);
 
         // Call Python backend
