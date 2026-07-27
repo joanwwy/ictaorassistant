@@ -8,6 +8,8 @@
     <link rel="stylesheet"
           href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 
+    <link rlf="stylesheet" href="/css/style.css">
+
     <style>
         .status-good {
             color: green;
@@ -24,6 +26,7 @@
             word-wrap: break-word;
             font-size: 0.9rem;
             line-height: 1.5;
+            overflow-x: auto;
         }
 
         .card {
@@ -42,6 +45,8 @@
         <h1>ICT AOR Assistant</h1>
         <h3>Upload an ICT AOR and optionally provide a query.</h3>
     </div>
+
+    <form action ="/generate" method="post" enctype="multipart/form-data">
 
         <label for="userInput">
             Query (optional)
@@ -90,7 +95,7 @@
                 </p>
             <% } else { %>
                 <p class="status-warning">
-                    ⚠ Submission has missing information
+                    ⚠️ Submission has missing information
                 </p>
             <% } %>
 
