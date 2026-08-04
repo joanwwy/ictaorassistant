@@ -19,8 +19,84 @@ app.set('view engine', 'ejs');
 app.use(express.static(__dirname + '/public'));
 
 // Needed for parsing form data
-app.use(express.json());       
+app.use(express.json());
 app.use(express.urlencoded({extended: true}));
+
+// Turns the LLM's lightweight markdown (**bold**, -/1. lists, line breaks)
+// into safe HTML for display. Escapes first so no raw HTML from the model
+// or source document can slip through.
+function escapeHtml(str) {
+    return str.replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
+function applyInlineMarkdown(str) {
+    return str.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+
+function formatResult(text) {
+    if (!text) return null;
+
+    const lines = escapeHtml(text).split(/\r?\n/);
+    const htmlParts = [];
+    let paragraphBuffer = [];
+    let listBuffer = [];
+    let listType = null;
+
+    const flushParagraph = () => {
+        if (paragraphBuffer.length) {
+            htmlParts.push(`<p>${paragraphBuffer.join('<br>')}</p>`);
+            paragraphBuffer = [];
+        }
+    };
+
+    const flushList = () => {
+        if (listBuffer.length) {
+            const tag = listType;
+            htmlParts.push(`<${tag}>${listBuffer.map((item) => `<li>${item}</li>`).join('')}</${tag}>`);
+            listBuffer = [];
+            listType = null;
+        }
+    };
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+
+        if (!line) {
+            flushParagraph();
+            flushList();
+            continue;
+        }
+
+        const headingMatch = line.match(/^\*\*(.+?)\*\*:?$/);
+        if (headingMatch) {
+            flushParagraph();
+            flushList();
+            htmlParts.push(`<h4>${headingMatch[1]}</h4>`);
+            continue;
+        }
+
+        const bulletMatch = line.match(/^[-*]\s+(.*)$/);
+        const numberedMatch = line.match(/^\d+\.\s+(.*)$/);
+        if (bulletMatch || numberedMatch) {
+            const newType = bulletMatch ? 'ul' : 'ol';
+            if (listType && listType !== newType) flushList();
+            listType = newType;
+            flushParagraph();
+            listBuffer.push(applyInlineMarkdown((bulletMatch || numberedMatch)[1]));
+            continue;
+        }
+
+        flushList();
+        paragraphBuffer.push(applyInlineMarkdown(line));
+    }
+
+    flushParagraph();
+    flushList();
+
+    return htmlParts.join('\n');
+}
 
 // Needed for Prisma to connect to database
 const { Pool } = require('pg');
@@ -82,7 +158,7 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
         fs.unlinkSync(file.path);
 
         res.render('pages/home', {
-            result: data.result,
+            result: formatResult(data.result),
             extracted_inputs: data.extracted_inputs,
             computed_metrics: data.computed_metrics,
             missing_fields: data.missing_fields,

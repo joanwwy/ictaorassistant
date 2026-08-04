@@ -1,10 +1,16 @@
 import io
 import json
 import re
+import posixpath
+import zipfile
 import pandas as pd
+from lxml import etree
+from dotenv import load_dotenv
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+load_dotenv()
 
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -72,11 +78,54 @@ def extract_pdf(contents: bytes, filename: str):
         raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {str(e)}")
     return docs
 
+RELS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+
+def _strip_dangling_relationships(contents: bytes) -> bytes:
+    """Remove .rels entries pointing at parts missing from the archive.
+
+    Some tools re-save .docx files without cleaning up relationship
+    references (e.g. to word/people.xml for @mentions), which makes
+    python-docx raise a KeyError when it tries to walk every part.
+    """
+    zin = zipfile.ZipFile(io.BytesIO(contents))
+    names = set(zin.namelist())
+    buffer = io.BytesIO()
+
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+
+            if item.filename.endswith(".rels"):
+                base_dir = posixpath.dirname(posixpath.dirname(item.filename))
+                tree = etree.fromstring(data)
+
+                for rel in tree.findall(f"{{{RELS_NS}}}Relationship"):
+                    if rel.get("TargetMode") == "External":
+                        continue
+                    target = posixpath.normpath(
+                        posixpath.join(base_dir, rel.get("Target"))
+                    )
+                    if target not in names:
+                        tree.remove(rel)
+
+                data = etree.tostring(
+                    tree, xml_declaration=True, encoding="UTF-8", standalone=True
+                )
+
+            zout.writestr(item, data)
+
+    return buffer.getvalue()
+
 
 def extract_docx(contents: bytes, filename: str):
     docs = []
     try:
-        doc = DocxDocument(io.BytesIO(contents))
+        try:
+            doc = DocxDocument(io.BytesIO(contents))
+        except KeyError:
+            doc = DocxDocument(io.BytesIO(_strip_dangling_relationships(contents)))
+
         paragraphs = [
             para.text.strip()
             for para in doc.paragraphs

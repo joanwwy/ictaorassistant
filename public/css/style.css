@@ -35,3 +35,18 @@
 .cancel-create-post {
     text-align: center;
 }
+
+.result-container h4 {
+    margin-top: 1.25rem;
+    margin-bottom: 0.5rem;
+}
+
+.result-container h4:first-of-type {
+    margin-top: 0.5rem;
+}
+
+.result-container p,
+.result-container ul,
+.result-container ol {
+    margin-bottom: 0.75rem;
+}
