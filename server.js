@@ -43,18 +43,27 @@ function formatResult(text) {
     let paragraphBuffer = [];
     let listBuffer = [];
     let listType = null;
+    // Tracks where the next <ol> should resume counting from, so a numbered
+    // section interrupted by a bullet sub-list (e.g. "1. Heading" / "- detail"
+    // / "2. Heading") keeps counting up instead of every <ol> restarting at 1.
+    let orderedStart = 1;
 
     const flushParagraph = () => {
         if (paragraphBuffer.length) {
             htmlParts.push(`<p>${paragraphBuffer.join('<br>')}</p>`);
             paragraphBuffer = [];
+            orderedStart = 1;
         }
     };
 
     const flushList = () => {
         if (listBuffer.length) {
             const tag = listType;
-            htmlParts.push(`<${tag}>${listBuffer.map((item) => `<li>${item}</li>`).join('')}</${tag}>`);
+            const startAttr = tag === 'ol' && orderedStart > 1 ? ` start="${orderedStart}"` : '';
+            htmlParts.push(`<${tag}${startAttr}>${listBuffer.map((item) => `<li>${item}</li>`).join('')}</${tag}>`);
+            if (tag === 'ol') {
+                orderedStart += listBuffer.length;
+            }
             listBuffer = [];
             listType = null;
         }
@@ -74,6 +83,7 @@ function formatResult(text) {
             flushParagraph();
             flushList();
             htmlParts.push(`<h4>${headingMatch[1]}</h4>`);
+            orderedStart = 1;
             continue;
         }
 
