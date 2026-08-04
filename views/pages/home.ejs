@@ -4,157 +4,40 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ICT AOR Assistant</title>
-
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-
-    <link rlf="stylesheet" href="/css/style.css">
-
-    <style>
-        .status-good {
-            color: green;
-            font-weight: bold;
-        }
-
-        .status-warning {
-            color: orange;
-            font-weight: bold;
-        }
-
-        pre {
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            font-size: 0.9rem;
-            line-height: 1.5;
-            overflow-x: auto;
-        }
-
-        .card {
-            margin-bottom: 1rem;
-        }
-    </style>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css"/>
+    <link rel="stylesheet" href="/css/style.css" >
 </head>
-
 <body>
+    <main class="container">
+        <%- include('../partials/navbar'); %>
 
-<main class="container">
+        <div class="welcome-container">
+            <h1>ICT AOR Assistant</h1>
+            <h2>Submit your query below to get started.</h2>
+        </div>
 
-    <%- include('../partials/navbar'); %>
+        <form action="/generate" method="post" enctype="multipart/form-data">
+            <label for="userInput">Your Query</label>
+            <textarea id="userInput" name="userInput" placeholder="Enter your query here..." rows="5"></textarea>
 
-    <div style="text-align:center;margin-bottom:2rem;">
-        <h1>ICT AOR Assistant</h1>
-        <h3>Upload an ICT AOR and optionally provide a query.</h3>
-    </div>
+            <label for="attachment">Attach a file</label>
+            <input type="file" id="attachment" name="attachment">
 
-    <form action ="/generate" method="post" enctype="multipart/form-data">
+            <button type="submit">Submit</button>
+        </form>
 
-        <label for="userInput">
-            Query (optional)
-        </label>
+        <% if (error) { %>
+            <article class="error-container">
+                <p><%= error %></p>
+            </article>
+        <% } %>
 
-        <textarea
-            id="userInput"
-            name="userInput"
-            rows="4"
-            placeholder="Leave blank for a full ICT AOR assessment..."
-        ></textarea>
-
-        <label for="attachment">
-            Upload ICT AOR
-        </label>
-
-        <input
-            type="file"
-            id="attachment"
-            name="attachment"
-            required
-        >
-
-        <button type="submit">
-            Analyse AOR
-        </button>
-
-    </form>
-
-    <% if (error) { %>
-        <article>
-            <h3>Error</h3>
-            <p><%= error %></p>
-        </article>
-    <% } %>
-
-    <% if (typeof submission_complete !== 'undefined' && submission_complete !== null) { %>
-
-        <article class="card">
-
-            <h3>Submission Status</h3>
-
-            <% if (submission_complete) { %>
-                <p class="status-good">
-                    ✅ Submission appears complete
-                </p>
-            <% } else { %>
-                <p class="status-warning">
-                    ⚠️ Submission has missing information
-                </p>
-            <% } %>
-
-        </article>
-
-    <% } %>
-
-    <% if (extracted_inputs) { %>
-
-        <article class="card">
-
-            <h3>Extracted Inputs</h3>
-
-            <pre><%= JSON.stringify(extracted_inputs, null, 2) %></pre>
-
-        </article>
-
-    <% } %>
-
-    <% if (computed_metrics) { %>
-
-        <article class="card">
-
-            <h3>Computed Metrics</h3>
-
-            <pre><%= JSON.stringify(computed_metrics, null, 2) %></pre>
-
-        </article>
-
-    <% } %>
-
-    <% if (missing_fields && missing_fields.length > 0) { %>
-
-        <article class="card">
-
-            <h3>Missing Information</h3>
-
-            <ul>
-                <% missing_fields.forEach(function(field) { %>
-                    <li><%= field %></li>
-                <% }); %>
-            </ul>
-
-        </article>
-
-    <% } %>
-
-    <% if (result) { %>
-
-        <article class="card">
-
-            <h3>AI Assessment</h3>
-
-            <div class="result-container"><%- result %></div>
-
-        </article>
-
-    <% } %>
-
-</main>
+        <% if (result) { %>
+            <article class="result-container">
+                <h3>Result</h3>
+                <%- result %>
+            </article>
+        <% } %>
+    </main>
 </body>
 </html>

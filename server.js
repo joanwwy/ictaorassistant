@@ -108,14 +108,7 @@ const prisma = new PrismaClient({ adapter });
 
 // Main landing page
 app.get('/', function(req, res) {
-    res.render('pages/home', {
-        result: null,
-        error: null,
-        extracted_inputs: null,
-        computed_metrics: null,
-        missing_fields: [],
-        submission_complete: null
-    });
+    res.render('pages/home', { result: null, error: null });
 });
 
 // About landing page
@@ -130,14 +123,7 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
         const file = req.file;
 
         if (!file) {
-            return res.render('pages/home', {
-                error: 'Please attach a file.',
-                result: null,
-                extracted_inputs: null,
-                computed_metrics: null,
-                missing_fields: [],
-                submission_complete: null
-            });
+            return res.render('pages/home', { error: 'Please attach a file.', result: null });
         }
 
         // Build form data to send to Python backend
@@ -157,25 +143,10 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
         // Clean up uploaded file after processing
         fs.unlinkSync(file.path);
 
-        res.render('pages/home', {
-            result: formatResult(data.result),
-            extracted_inputs: data.extracted_inputs,
-            computed_metrics: data.computed_metrics,
-            missing_fields: data.missing_fields,
-            submission_complete: data.submission_complete,
-            error: null
-        });
+        res.render('pages/home', { result: formatResult(data.result), error: null });
     } catch (error) {
-            console.log(error);
-
-        res.render('pages/home', {
-            error: 'Something went wrong.',
-            result: null,
-            extracted_inputs: null,
-            computed_metrics: null,
-            missing_fields: [],
-            submission_complete: null
-        });
+        console.log(error);
+        res.render('pages/home', { error: 'Something went wrong.', result: null });
     }
 });
 
