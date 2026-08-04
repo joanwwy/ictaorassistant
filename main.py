@@ -622,7 +622,7 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
         }
 
     computed_metrics = compute_aor_metrics(extracted_inputs)
-    missing_fields = identify_missing_fields(extracted_inputs)
+    missing_fields = identify_missing_fields(extracted_inputs, computed_metrics)
     submission_complete = len(missing_fields) == 0
 
     explanation_prompt = build_explanation_prompt(
