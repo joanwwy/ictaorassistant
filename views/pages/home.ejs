@@ -20,8 +20,9 @@
             <label for="userInput">Your Query</label>
             <textarea id="userInput" name="userInput" placeholder="Enter your query here..." rows="5"></textarea>
 
-            <label for="attachment">Attach a file</label>
-            <input type="file" id="attachment" name="attachment">
+            <label for="attachment">Upload your AOR (.docx)</label>
+            <input type="file" id="attachment" name="attachment"
+                   accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
 
             <button type="submit">Submit</button>
         </form>
@@ -36,6 +37,16 @@
             <article class="result-container">
                 <h3>Result</h3>
                 <%- result %>
+
+                <% if (amendedDocx) { %>
+                    <p>
+                        <a href="data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,<%= amendedDocx %>"
+                           download="<%= amendedDocxFilename %>"
+                           role="button">
+                            Download Amended AOR (.docx)
+                        </a>
+                    </p>
+                <% } %>
             </article>
         <% } %>
     </main>

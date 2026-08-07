@@ -118,7 +118,7 @@ const prisma = new PrismaClient({ adapter });
 
 // Main landing page
 app.get('/', function(req, res) {
-    res.render('pages/home', { result: null, error: null });
+    res.render('pages/home', { result: null, error: null, amendedDocx: null, amendedDocxFilename: null });
 });
 
 // About landing page
@@ -133,7 +133,12 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
         const file = req.file;
 
         if (!file) {
-            return res.render('pages/home', { error: 'Please attach a file.', result: null });
+            return res.render('pages/home', {
+                error: 'Please attach a file.',
+                result: null,
+                amendedDocx: null,
+                amendedDocxFilename: null
+            });
         }
 
         // Build form data to send to Python backend
@@ -153,10 +158,29 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
         // Clean up uploaded file after processing
         fs.unlinkSync(file.path);
 
-        res.render('pages/home', { result: formatResult(data.result), error: null });
+        if (!response.ok || data.status === 'error') {
+            return res.render('pages/home', {
+                error: data.detail || data.message || 'Something went wrong.',
+                result: null,
+                amendedDocx: null,
+                amendedDocxFilename: null
+            });
+        }
+
+        res.render('pages/home', {
+            result: formatResult(data.result),
+            error: null,
+            amendedDocx: data.amended_docx_base64 || null,
+            amendedDocxFilename: data.amended_docx_base64 ? `amended-${file.originalname}` : null
+        });
     } catch (error) {
         console.log(error);
-        res.render('pages/home', { error: 'Something went wrong.', result: null });
+        res.render('pages/home', {
+            error: 'Something went wrong.',
+            result: null,
+            amendedDocx: null,
+            amendedDocxFilename: null
+        });
     }
 });
 

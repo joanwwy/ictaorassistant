@@ -1,6 +1,7 @@
 import io
 import json
 import re
+import base64
 import posixpath
 import zipfile
 import pandas as pd
@@ -118,13 +119,17 @@ def _strip_dangling_relationships(contents: bytes) -> bytes:
     return buffer.getvalue()
 
 
+def _load_docx(contents: bytes) -> DocxDocument:
+    try:
+        return DocxDocument(io.BytesIO(contents))
+    except KeyError:
+        return DocxDocument(io.BytesIO(_strip_dangling_relationships(contents)))
+
+
 def extract_docx(contents: bytes, filename: str):
     docs = []
     try:
-        try:
-            doc = DocxDocument(io.BytesIO(contents))
-        except KeyError:
-            doc = DocxDocument(io.BytesIO(_strip_dangling_relationships(contents)))
+        doc = _load_docx(contents)
 
         paragraphs = [
             para.text.strip()
@@ -433,6 +438,57 @@ def identify_missing_fields(inputs: dict, metrics: dict):
 
 
 # =========================================================
+# DOCUMENT AMENDMENT
+# =========================================================
+
+FIELD_LABELS = {
+    "capex": "Capital Expenditure (CAPEX)",
+    "opex": "Operating Expenditure (OPEX)",
+    "project_duration_years": "Project Duration (years)",
+    "annual_manpower_impact_fte": "Annual Manpower Impact (FTE)",
+    "annual_benefit": "Annual Benefit ($)",
+}
+
+FIELD_PLACEHOLDERS = {
+    "capex": "[CAPEX — enter the total capital expenditure, e.g. S$500,000]",
+    "opex": "[OPEX — enter the total operating expenditure over the project duration, e.g. S$300,000]",
+    "project_duration_years": "[Project Duration — enter the number of years, e.g. 3]",
+    "annual_manpower_impact_fte": "[Annual Manpower Impact (FTE) — enter the estimated FTE impact, e.g. 0.5]",
+    "annual_benefit": "[Annual Benefit — enter the estimated annual dollar benefit, e.g. S$50,000]",
+}
+
+
+def build_amended_docx(contents: bytes, missing_fields: list) -> bytes:
+    """Append a "Missing Information" section with fill-in placeholders
+    to the user's own uploaded document, so they can complete it in Word.
+    """
+    doc = _load_docx(contents)
+
+    doc.add_page_break()
+    try:
+        doc.add_heading("Missing Information — Please Complete", level=1)
+    except KeyError:
+        # Document has no "Heading 1" style defined — fall back to bold text.
+        heading_paragraph = doc.add_paragraph()
+        heading_paragraph.add_run("Missing Information — Please Complete").bold = True
+    doc.add_paragraph(
+        "The fields below were not found in your submission. "
+        "Please replace each bracketed instruction with the correct value."
+    )
+
+    for field in missing_fields:
+        label = FIELD_LABELS.get(field, field.replace("_", " ").title())
+        placeholder = FIELD_PLACEHOLDERS.get(field, f"[{label} — enter value here]")
+        paragraph = doc.add_paragraph()
+        paragraph.add_run(f"{label}: ").bold = True
+        paragraph.add_run(placeholder)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
+# =========================================================
 # PROMPTS
 # =========================================================
 
@@ -550,6 +606,12 @@ Return the assessment in this structure:
 
 @app.post("/process")
 async def process(query: str = Form(""), file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".docx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload your AOR as a Word document (.docx) file."
+        )
+
     contents = await file.read()
 
     raw_docs = extract_documents(contents, file.filename)
@@ -637,6 +699,12 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
         HumanMessage(content=query.strip() or "Provide a full ICT AOR assessment.")
     ])
 
+    amended_docx_base64 = None
+    if missing_fields:
+        amended_docx_base64 = base64.b64encode(
+            build_amended_docx(contents, missing_fields)
+        ).decode("ascii")
+
     return {
         "status": "ok",
         "submission_complete": submission_complete,
@@ -644,6 +712,7 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
         "extracted_inputs": extracted_inputs,
         "computed_metrics": computed_metrics,
         "missing_fields": missing_fields,
+        "amended_docx_base64": amended_docx_base64,
         "sources_used": [
             {
                 "metadata": doc.metadata,
