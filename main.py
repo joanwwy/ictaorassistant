@@ -21,6 +21,7 @@ from langchain_community.vectorstores import FAISS
 
 from pypdf import PdfReader
 from docx import Document as DocxDocument
+from docx.enum.text import WD_COLOR_INDEX
 
 
 app = FastAPI()
@@ -170,6 +171,29 @@ def extract_docx(contents: bytes, filename: str):
     return docs
 
 
+def extract_candidate_headings(contents: bytes) -> list:
+    """Pull short, standalone paragraphs and table rows that likely function
+    as section headings. Many AOR documents lay out numbered section titles
+    as a two-column table row (e.g. "10 | Scope of Work") rather than a
+    plain paragraph, and bold a heading rather than apply Word's built-in
+    Heading style — so paragraph.style alone isn't reliable. Length is used
+    as a rough heuristic instead, and the LLM is left to judge which
+    candidates are actually headings.
+    """
+    doc = _load_docx(contents)
+    candidates = []
+    for paragraph in doc.paragraphs:
+        text = paragraph.text.strip()
+        if text and len(text) <= 80:
+            candidates.append(text)
+    for table in doc.tables:
+        for row in table.rows:
+            row_text = " ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+            if row_text and len(row_text) <= 80:
+                candidates.append(row_text)
+    return candidates
+
+
 def extract_excel(contents: bytes, filename: str):
     docs = []
     try:
@@ -235,7 +259,11 @@ def split_documents(raw_docs, embeddings):
     splitter = SemanticChunker(embeddings)
     result = []
     for doc in raw_docs:
-        if doc.metadata.get("content_type") == "row":
+        # Tables (and Excel rows) must stay intact — splitting them can
+        # separate a section header (e.g. "CAPEX"/"OPEX") from the rows/
+        # totals underneath it, causing the LLM to mislabel which figure
+        # belongs to which section.
+        if doc.metadata.get("content_type") in ("row", "table"):
             result.append(doc)
             continue
         chunks = splitter.create_documents(
@@ -458,7 +486,43 @@ FIELD_PLACEHOLDERS = {
 }
 
 
-def build_amended_docx(contents: bytes, missing_fields: list) -> bytes:
+def build_missing_information_section(missing_fields: list) -> str:
+    """Deterministically render the "Missing Information" section, rather
+    than leaving its wording/formatting to the LLM each time.
+    """
+    if not missing_fields:
+        return "5. Missing Information / Follow-up Required\n\nNo required information is missing."
+
+    bullet_lines = "\n".join(
+        f"- {FIELD_LABELS.get(field, field.replace('_', ' ').title())}"
+        for field in missing_fields
+    )
+    return (
+        "5. Missing Information / Follow-up Required\n\n"
+        "You are missing the following required information. Please include this in your AOR:\n"
+        f"{bullet_lines}"
+    )
+
+
+def build_structure_review_section(missing_sections: list, order_note: str) -> str:
+    """Deterministically render the "Document Structure Review" section
+    from the LLM's structured missing_sections/order_note output, rather
+    than trusting free-form narrative formatting each time.
+    """
+    if not missing_sections:
+        text = "All standard AOR sections appear to be present."
+    else:
+        bullet_lines = "\n".join(f"- {section}" for section in missing_sections)
+        text = (
+            "You are missing the following sections. Please include this in your AOR:\n"
+            f"{bullet_lines}"
+        )
+    if order_note:
+        text += f"\n\n{order_note}"
+    return "6. Document Structure Review\n\n" + text
+
+
+def build_amended_docx(contents: bytes, missing_fields: list, missing_sections: list = None) -> bytes:
     """Append a "Missing Information" section with fill-in placeholders
     to the user's own uploaded document, so they can complete it in Word.
     """
@@ -473,15 +537,22 @@ def build_amended_docx(contents: bytes, missing_fields: list) -> bytes:
         heading_paragraph.add_run("Missing Information — Please Complete").bold = True
     doc.add_paragraph(
         "The fields below were not found in your submission. "
-        "Please replace each bracketed instruction with the correct value."
+        "Please replace each highlighted instruction with the correct value."
     )
 
     for field in missing_fields:
         label = FIELD_LABELS.get(field, field.replace("_", " ").title())
         placeholder = FIELD_PLACEHOLDERS.get(field, f"[{label} — enter value here]")
         paragraph = doc.add_paragraph()
-        paragraph.add_run(f"{label}: ").bold = True
-        paragraph.add_run(placeholder)
+        paragraph.add_run(f"The {label} is missing — please include: ").bold = True
+        placeholder_run = paragraph.add_run(placeholder)
+        placeholder_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+
+    for section in (missing_sections or []):
+        paragraph = doc.add_paragraph()
+        paragraph.add_run("Missing section — ").bold = True
+        section_run = paragraph.add_run(f'please add a "{section}" section to your AOR.')
+        section_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -492,6 +563,61 @@ def build_amended_docx(contents: bytes, missing_fields: list) -> bytes:
 # PROMPTS
 # =========================================================
 
+STANDARD_AOR_SECTIONS = [
+    "Purpose",
+    "Background",
+    "Need For Deployment",
+    "Scope of Work",
+    "Estimated Costs",
+    "Net Economic Value (NEV) Analysis and Manpower Capitalisation",
+    "Funding",
+    "Approval",
+    "Annex A: Detailed Scope of Works and Project Timeline",
+    "Annex B: Detailed Cost Breakdown and Assessment",
+    "Annex C: Net Economic Value (NEV)",
+    "Annex D: Finance Manual Reference",
+]
+
+
+def build_structure_review_prompt(candidate_headings: list, standard_sections: list) -> str:
+    headings_text = "\n".join(f"- {h}" for h in candidate_headings)
+    standard_text = "\n".join(f"- {s}" for s in standard_sections)
+    return f"""
+You are reviewing whether an ICT AOR (Approval of Requirements) Word document
+follows the standard CAAS AOR structure.
+
+Standard AOR sections expected (in this rough order):
+{standard_text}
+
+Short/standalone lines found in the uploaded document (candidate section
+headings, in document order — not every line here is actually a heading,
+use judgement to tell real section headings apart from other short text):
+{headings_text}
+
+For each standard section, decide whether it is present: only count it as
+present if one of the candidate lines above is itself a heading/title for
+that section (matched by meaning, not exact wording — e.g. "10 Scope of
+Work" counts as "Scope of Work"). Do NOT count a section as present just
+because related content is mentioned in passing elsewhere without its own
+heading — a heading that has been removed, leaving only orphaned prose
+behind, must still be reported as missing.
+
+Also check whether the sections that ARE present appear in a reasonable
+order relative to the standard list, or if something is clearly out of
+place.
+
+Return ONLY a valid JSON object with this exact structure:
+{{
+  "missing_sections": ["<standard section name>", ...],
+  "order_note": "<one sentence if something is out of order, otherwise an empty string>"
+}}
+
+Do NOT comment on financial figures or data completeness — that is handled
+separately. Focus only on document structure. Do not wrap the JSON in
+markdown, and do not include any text outside the JSON object.
+"""
+
+
 def build_extraction_prompt(context: str):
     return f"""
 You are analysing an ICT Approval of Requirements (AOR) submission using the CAAS AOR template.
@@ -500,6 +626,9 @@ Your task is to extract RAW INPUTS only.
 Do NOT perform calculations.
 Do NOT infer missing values.
 Do NOT invent figures, benefits, assumptions, or dates.
+Do NOT substitute a figure from a different field or category just because it seems plausible
+(e.g. do not use an OPEX figure for CAPEX, or a total budget figure for either). Each field must
+come from text explicitly labelled for that exact field.
 Do NOT annualise any hours figures.
 
 Return ONLY a valid JSON object.
@@ -530,7 +659,52 @@ Field guidance:
 - "purpose": what the ICT project seeks to achieve.
 - "problem_statement": the gap, pain point, or problem being addressed.
 - "capex": one-off capital expenditure (implementation, hardware, cybersecurity, contingency).
+  Use a figure only if it is either (a) directly labelled CAPEX or "Capital Expenditure" in the
+  same sentence/phrase, or (b) a Sub Total / Grand Total / "Say" figure inside a table section
+  that is clearly grouped under a CAPEX / Capital Expenditure header, even if that specific row
+  does not repeat the word "CAPEX" itself. Prefer the Grand Total (inclusive of contingency) over
+  a Sub Total if both are present. Do NOT use a figure from the OPEX section, a combined/overall
+  total covering both CAPEX and OPEX together, a man-hour rate, or any other unrelated figure,
+  even if it seems plausible. If a CAPEX section header exists but every cost cell under it is
+  blank/empty, that means capex is null — do NOT reach into the OPEX section (or anywhere else)
+  for a substitute number just because CAPEX itself has none. If no such CAPEX figure exists,
+  use null.
 - "opex": total operating expenditure over the project duration (licences, maintenance, cloud support).
+  Use a figure only if it is either (a) directly labelled OPEX or "Operating Expenditure" in the
+  same sentence/phrase, or (b) a Sub Total / Grand Total / "Say" figure inside a table section
+  that is clearly grouped under an OPEX / Operating Expenditure header (this section's line items
+  are often described as "operations and maintenance", "recurring", "licences", or "subscription"
+  without repeating the word "OPEX" on every row). Prefer the Grand Total (inclusive of
+  contingency) over a Sub Total if both are present. Do NOT use a figure from the CAPEX section,
+  a combined/overall total covering both CAPEX and OPEX together, a man-hour rate, or any other
+  unrelated figure, even if it seems plausible. If an OPEX section header exists but every cost
+  cell under it is blank/empty, that means opex is null — do NOT reach into the CAPEX section (or
+  anywhere else) for a substitute number just because OPEX itself has none. If no such OPEX
+  figure exists, use null.
+
+Worked example (a cost table where the CAPEX section header exists but every cost cell under
+it is blank, and the OPEX section below it has real figures):
+
+  S/N | Description                                          | Estimated Cost ($)
+      | CAPEX                                                |
+  1   | Implementation of sample system and associated works |
+  2   | Provision of cybersecurity services                  |
+      | Sub Total                                            |
+      | Contingency (5% of Sub Total)                        |
+      | Grand Total                                          |
+      | Say                                                  |
+      | OPEX                                                 |
+  1   | Provision of recurring subscription services         | 522,000
+  2   | Operations and maintenance support services           | 884,000
+      | Sub Total                                            | 1,406,000
+      | Contingency (5% of Sub Total)                        | 70,300
+      | Grand Total                                          | 1,476,300
+      | Say                                                  | 1.5m
+
+The ONLY correct extraction from this table is "capex": null and "opex": 1476300.
+It would be WRONG to set "capex" to 1476300, 1406000, or any other number from the OPEX
+section — the CAPEX section has no figures of its own, so capex must be null, even though
+that means leaving it blank rather than filling in a plausible-looking nearby number.
 - "project_duration_years": project duration in years as an integer.   If the document states a date range (e.g. FY25 to FY28), count the  number of full operational years, not the number of financial year 
   labels. For example, FY25 to FY27 = 3 years, FY25 to FY28 = 4 years.  Prefer an explicitly stated duration (e.g. "3-year contract") over  a derived date range if both are present..
 - "annual_productivity_time_savings_hours": the RAW total hours figure as stated in the document. Do NOT annualise. Do NOT adjust for number of staff or duration.
@@ -595,8 +769,8 @@ Return the assessment in this structure:
 - Benefit-cost ratio
 - Whether the submission appears complete for AOR review
 
-5. Missing Information / Follow-up Required
-- List any missing inputs that prevent assessment or computation.
+Stop after section 4. Do NOT write a "Missing Information" section yourself —
+it will be added separately from the authoritative missing fields list above.
 """
 
 
@@ -699,16 +873,41 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
         HumanMessage(content=query.strip() or "Provide a full ICT AOR assessment.")
     ])
 
+    full_result = (
+        final_response.content.rstrip()
+        + "\n\n"
+        + build_missing_information_section(missing_fields)
+    )
+
+    missing_sections = []
+    if file.filename.lower().endswith(".docx"):
+        try:
+            candidate_headings = extract_candidate_headings(contents)
+            structure_prompt = build_structure_review_prompt(candidate_headings, STANDARD_AOR_SECTIONS)
+            structure_response = llm.invoke([
+                SystemMessage(content=structure_prompt),
+                HumanMessage(content="Assess the document's structure against the standard AOR format.")
+            ])
+            structure_data = parse_json_from_llm(structure_response.content)
+            if isinstance(structure_data, dict):
+                missing_sections = structure_data.get("missing_sections") or []
+                order_note = structure_data.get("order_note") or ""
+            else:
+                order_note = ""
+            full_result += "\n\n" + build_structure_review_section(missing_sections, order_note)
+        except Exception:
+            pass
+
     amended_docx_base64 = None
-    if missing_fields:
+    if missing_fields or missing_sections:
         amended_docx_base64 = base64.b64encode(
-            build_amended_docx(contents, missing_fields)
+            build_amended_docx(contents, missing_fields, missing_sections)
         ).decode("ascii")
 
     return {
         "status": "ok",
         "submission_complete": submission_complete,
-        "result": final_response.content,
+        "result": full_result,
         "extracted_inputs": extracted_inputs,
         "computed_metrics": computed_metrics,
         "missing_fields": missing_fields,

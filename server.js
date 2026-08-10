@@ -52,7 +52,6 @@ function formatResult(text) {
         if (paragraphBuffer.length) {
             htmlParts.push(`<p>${paragraphBuffer.join('<br>')}</p>`);
             paragraphBuffer = [];
-            orderedStart = 1;
         }
     };
 
