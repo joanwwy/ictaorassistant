@@ -131,18 +131,16 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
         const { userInput } = req.body;
         const file = req.file;
 
-        if (!file) {
-            return res.render('pages/home', {
-                error: 'Please attach a file.',
-                result: null,
-                amendedDocx: null,
-                amendedDocxFilename: null
-            });
-        }
-
         // Build form data to send to Python backend
         const formData = new FormData();
         formData.append('query', userInput || '');
+        if (file){
+            formData.append(
+                'file',
+                fs.createReadStream(file.path),
+                file.originalname
+            );
+        }
         formData.append('file', fs.createReadStream(file.path), file.originalname);
 
         // Call Python backend
@@ -155,6 +153,7 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
         const data = await response.json();
 
         // Clean up uploaded file after processing
+<<<<<<< HEAD
         fs.unlinkSync(file.path);
 
         if (!response.ok || data.status === 'error') {
@@ -166,6 +165,12 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
             });
         }
 
+=======
+       if (file){
+            fs.unlinkSync(file.path);
+       }
+       
+>>>>>>> d5ff2c7 (testJo)
         res.render('pages/home', {
             result: formatResult(data.result),
             error: null,

@@ -8,6 +8,7 @@ import pandas as pd
 from lxml import etree
 from dotenv import load_dotenv
 
+from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -779,22 +780,42 @@ it will be added separately from the authoritative missing fields list above.
 # =========================================================
 
 @app.post("/process")
-async def process(query: str = Form(""), file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".docx"):
-        raise HTTPException(
-            status_code=400,
-            detail="Please upload your AOR as a Word document (.docx) file."
-        )
+async def process(query: str = Form(""), file: UploadFile = File(None)):
 
-    contents = await file.read()
+    if file:
+        if not file.filename.lower().endswith(".docx"):
+            raise HTTPException(
+                status_code=400,
+                detail="Please upload your AOR as a Word document (.docx) file."
+            )
 
-    raw_docs = extract_documents(contents, file.filename)
+        contents = await file.read()
 
-    if not raw_docs:
-        raise HTTPException(
-            status_code=400,
-            detail="The document appears to be empty or unreadable."
-        )
+        raw_docs = extract_documents(contents, file.filename)
+
+        if not raw_docs:
+            raise HTTPException(
+                status_code=400,
+                detail="The document appears to be empty or unreadable."
+            )
+   
+    else:
+        if not query.strip():
+            raise HTTPException(
+                 status_code=400,
+                 detail="Please provide either a file or some text."
+            )
+
+        raw_docs = [
+            LCDocument(
+                page_content=query,
+                metadata={
+                    "filename":"user_prompt",
+                    "source_type":"prompt",
+                    "content_type":"plain_text"
+                }
+            )
+        ]
 
     embeddings = OpenAIEmbeddings()
     docs = split_documents(raw_docs, embeddings)
@@ -880,7 +901,7 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
     )
 
     missing_sections = []
-    if file.filename.lower().endswith(".docx"):
+    if file and file.filename.lower().endswith(".docx"):
         try:
             candidate_headings = extract_candidate_headings(contents)
             structure_prompt = build_structure_review_prompt(candidate_headings, STANDARD_AOR_SECTIONS)
@@ -899,7 +920,7 @@ async def process(query: str = Form(""), file: UploadFile = File(...)):
             pass
 
     amended_docx_base64 = None
-    if missing_fields or missing_sections:
+    if file and (missing_fields or missing_sections):
         amended_docx_base64 = base64.b64encode(
             build_amended_docx(contents, missing_fields, missing_sections)
         ).decode("ascii")
