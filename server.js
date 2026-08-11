@@ -129,10 +129,13 @@ app.get('/about', function(req, res) {
 app.post('/generate', upload.single('attachment'), async function(req, res) {
     try {
         const { userInput } = req.body;
+        console.log("userInput:", userInput);
         const file = req.file;
+        console.log("file:", file);
 
         // Build form data to send to Python backend
         const formData = new FormData();
+        formData.append('query', userInput || '');
         if (file){
             formData.append(
                 'file',
@@ -140,7 +143,6 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
                 file.originalname
             );
         }
-        formData.append('file', fs.createReadStream(file.path), file.originalname);
 
         // Call Python backend
         const response = await fetch(process.env.PYTHON_BACKEND_URL + '/process', {
