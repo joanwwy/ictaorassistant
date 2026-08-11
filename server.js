@@ -153,7 +153,6 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
         const data = await response.json();
 
         // Clean up uploaded file after processing
-<<<<<<< HEAD
         fs.unlinkSync(file.path);
 
         if (!response.ok || data.status === 'error') {
@@ -165,12 +164,6 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
             });
         }
 
-=======
-       if (file){
-            fs.unlinkSync(file.path);
-       }
-       
->>>>>>> d5ff2c7 (testJo)
         res.render('pages/home', {
             result: formatResult(data.result),
             error: null,
