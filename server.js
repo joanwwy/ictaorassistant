@@ -22,6 +22,9 @@ app.use(express.static(__dirname + '/public'));
 app.use(express.json());
 app.use(express.urlencoded({extended: true}));
 
+let data = {};
+let file = null;
+
 // Turns the LLM's lightweight markdown (**bold**, -/1. lists, line breaks)
 // into safe HTML for display. Escapes first so no raw HTML from the model
 // or source document can slip through.
