@@ -129,9 +129,7 @@ app.get('/about', function(req, res) {
 app.post('/generate', upload.single('attachment'), async function(req, res) {
     try {
         const { userInput } = req.body;
-        console.log("userInput:", userInput);
         const file = req.file;
-        console.log("file:", file);
 
         // Build form data to send to Python backend
         const formData = new FormData();
