@@ -133,7 +133,6 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
 
         // Build form data to send to Python backend
         const formData = new FormData();
-        formData.append('query', userInput || '');
         if (file){
             formData.append(
                 'file',
@@ -153,7 +152,7 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
         const data = await response.json();
 
         // Clean up uploaded file after processing
-        fs.unlinkSync(file.path);
+        if (file) fs.unlinkSync(file.path);
 
         if (!response.ok || data.status === 'error') {
             return res.render('pages/home', {
@@ -168,7 +167,7 @@ app.post('/generate', upload.single('attachment'), async function(req, res) {
             result: formatResult(data.result),
             error: null,
             amendedDocx: data.amended_docx_base64 || null,
-            amendedDocxFilename: data.amended_docx_base64 ? `amended-${file.originalname}` : null
+            amendedDocxFilename: (file && data.amended_docx_base64) ? `amended-${file.originalname}` : null
         });
     } catch (error) {
         console.log(error);
