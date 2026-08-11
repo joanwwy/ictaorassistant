@@ -120,6 +120,21 @@ def _strip_dangling_relationships(contents: bytes) -> bytes:
 
     return buffer.getvalue()
 
+def build_result_docx(result_text: str) -> bytes:
+    """Build a Word document containing the assessment result for text-only submissions."""
+    doc = DocxDocument()
+    try:
+        doc.add_heading("ICT AOR Assessment", level=1)
+    except KeyError:
+        heading_paragraph = doc.add_paragraph()
+        heading_paragraph.add_run("ICT AOR Assessment").bold = True
+
+    for line in result_text.split("\n"):
+        doc.add_paragraph(line)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
 
 def _load_docx(contents: bytes) -> DocxDocument:
     try:
@@ -920,10 +935,18 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
             pass
 
     amended_docx_base64 = None
+    amended_docx_filename = None
+
     if file and (missing_fields or missing_sections):
         amended_docx_base64 = base64.b64encode(
             build_amended_docx(contents, missing_fields, missing_sections)
         ).decode("ascii")
+        amended_docx_filename = f"amended-{file.filename}"
+    elif not file:
+        amended_docx_base64 = base64.b64encode(
+            build_result_docx(full_result)
+        ).decode("ascii")
+        amended_docx_filename = "aor-assessment.docx"
 
     return {
         "status": "ok",
@@ -933,6 +956,7 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         "computed_metrics": computed_metrics,
         "missing_fields": missing_fields,
         "amended_docx_base64": amended_docx_base64,
+        "amended_docx_filename": amended_docx_filename,
         "sources_used": [
             {
                 "metadata": doc.metadata,

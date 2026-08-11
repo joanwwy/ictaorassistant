@@ -117,7 +117,15 @@ const prisma = new PrismaClient({ adapter });
 
 // Main landing page
 app.get('/', function(req, res) {
-    res.render('pages/home', { result: null, error: null, amendedDocx: null, amendedDocxFilename: null });
+    const amendedDocxFilename = data.amended_docx_filename
+        || (file && data.amended_docx_base64 ? `amended-${file.originalname}` : null);
+
+    res.render('pages/home', {
+        result: formatResult(data.result),
+        error: null,
+        amendedDocx: data.amended_docx_base64 || null,
+        amendedDocxFilename: amendedDocxFilename
+    });    
 });
 
 // About landing page
