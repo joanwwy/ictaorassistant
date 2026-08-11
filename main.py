@@ -768,7 +768,7 @@ Return the assessment in this structure:
 - Total costs (PV_cost)
 - Net present value
 - Benefit-cost ratio
-- Whether the submission appears complete for AOR review
+- Feedback on completeness of user's submission
 
 Stop after section 4. Do NOT write a "Missing Information" section yourself —
 it will be added separately from the authoritative missing fields list above.
