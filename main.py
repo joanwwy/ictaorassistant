@@ -2,6 +2,7 @@ import io
 import json
 import re
 import base64
+import logging
 import posixpath
 import zipfile
 import pandas as pd
@@ -23,6 +24,9 @@ from langchain_community.vectorstores import FAISS
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 from docx.enum.text import WD_COLOR_INDEX
+from docx.oxml import OxmlElement
+from docx.text.paragraph import Paragraph
+from docx.table import Table
 from pathlib import Path
 from docx.oxml.ns import qn
 
@@ -421,7 +425,34 @@ def extract_docx(contents: bytes, filename: str):
     return docs
 
 
-def extract_candidate_headings(contents: bytes) -> list:
+def _cost_table_snippet(table, max_rows: int = 3, max_len: int = 150) -> str:
+    """Return a short snippet of a table's content if it looks like it
+    discusses cost/budget figures (CAPEX/OPEX labels or dollar amounts),
+    otherwise an empty string.
+
+    Requires more than one row: a single-row table is itself just another
+    heading label (e.g. "12 | Estimated Costs", the SAME two-column
+    heading-table pattern used throughout these documents) — not an
+    actual cost breakdown — and would otherwise trigger on the word
+    "Costs" in a neighboring section's own title, wrongly making it look
+    like cost data follows.
+    """
+    if len(table.rows) < 2:
+        return ""
+    parts = []
+    has_signal = False
+    for row in table.rows[:max_rows]:
+        cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+        if not cells:
+            continue
+        row_text = " ".join(cells)
+        parts.append(row_text)
+        if re.search(r"capex|opex|cost|budget|\$|\d{3,}", row_text, re.IGNORECASE):
+            has_signal = True
+    return " | ".join(parts)[:max_len] if has_signal else ""
+
+
+def extract_candidate_headings(contents: bytes, include_tables: bool = True, with_context: bool = False) -> list:
     """Pull short, standalone paragraphs and table rows that likely function
     as section headings. Many AOR documents lay out numbered section titles
     as a two-column table row (e.g. "10 | Scope of Work") rather than a
@@ -429,19 +460,183 @@ def extract_candidate_headings(contents: bytes) -> list:
     Heading style — so paragraph.style alone isn't reliable. Length is used
     as a rough heuristic instead, and the LLM is left to judge which
     candidates are actually headings.
+
+    `include_tables` can be disabled for documents (like the reference AOR
+    template) where headings are all plain paragraphs and scanning tables
+    would only add noise (row numbers, merged-cell duplication, etc.) from
+    cost-breakdown tables.
+
+    `with_context`, when a table-row heading comes from a small (<=2 row)
+    standalone heading table, peeks at the table immediately following it
+    for cost/budget signal (e.g. "8 | Estimated Costs" followed by a
+    separate CAPEX/OPEX breakdown table) and appends a short snippet. This
+    lets the LLM recognize a differently-worded heading (e.g. "Estimated
+    Costs" vs. a reference "Proposed Budget") as the same section when the
+    content it precedes makes that unambiguous, even with no shared words.
     """
-    doc = _load_docx(contents)
-    candidates = []
-    for paragraph in doc.paragraphs:
-        text = paragraph.text.strip()
-        if text and len(text) <= 80:
-            candidates.append(text)
-    for table in doc.tables:
-        for row in table.rows:
-            row_text = " ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
-            if row_text and len(row_text) <= 80:
-                candidates.append(row_text)
-    return candidates
+    return [entry["text"] for entry in build_heading_index(contents, include_tables, with_context)]
+
+
+def build_heading_index(contents: bytes, include_tables: bool = True, with_context: bool = False) -> list:
+    """Like extract_candidate_headings, but returns each candidate's
+    document position alongside its text:
+    {"id": str, "text": str, "paragraph": Paragraph} or
+    {"id": str, "text": str, "row": <table row>}.
+
+    IDs are positional/deterministic (P{i} = i-th paragraph, T{ti}R{ri} =
+    ri-th row of the ti-th table), so they can be recomputed identically
+    from the same document bytes across separately-loaded Document
+    instances — this lets a structure-review LLM call (analysing one
+    loaded copy) and a later document-edit step (which loads its own
+    fresh copy to modify and save) agree on what an ID refers to, without
+    sharing Python objects across the two steps.
+
+    Loads its own Document from `contents`. If you already have a loaded
+    Document that you intend to modify and save, use
+    _heading_index_from_doc(doc, ...) instead so the returned
+    paragraph/row objects belong to the instance you'll actually save —
+    otherwise inserting relative to them has no effect on your saved file.
+    """
+    return _heading_index_from_doc(_load_docx(contents), include_tables, with_context)
+
+
+def _iter_body_items(doc):
+    """Yield ("paragraph"|"table", object) for each top-level paragraph and
+    table in the document body, in TRUE document order. python-docx's
+    doc.paragraphs / doc.tables are each internally ordered, but the
+    interleaving between the two collections is lost when read separately
+    — this walks the underlying XML body directly to recover it, which
+    matters for telling whether a heading appears before or after an
+    Annex boundary.
+    """
+    for child in doc.element.body.iterchildren():
+        if child.tag == qn("w:p"):
+            yield "paragraph", Paragraph(child, doc)
+        elif child.tag == qn("w:tbl"):
+            yield "table", Table(child, doc)
+
+
+def _heading_index_from_doc(doc, include_tables: bool = True, with_context: bool = False) -> list:
+    body_items = list(_iter_body_items(doc))
+    # IDs stay P{i}/T{ti}R{ri} using the same numbering as doc.paragraphs[i]
+    # / doc.tables[ti] (each collection counted independently, in its own
+    # order) — only the ORDER entries are appended to `index` changes here,
+    # so existing ids/lookups by id are unaffected.
+    index = []
+    p_count = 0
+    t_count = 0
+    for pos, (kind, item) in enumerate(body_items):
+        if kind == "paragraph":
+            i = p_count
+            p_count += 1
+            text = item.text.strip()
+            if text and len(text) <= 80:
+                index.append({"id": f"P{i}", "text": text, "paragraph": item})
+        else:
+            ti = t_count
+            t_count += 1
+            if not include_tables:
+                continue
+            for ri, row in enumerate(item.rows):
+                row_text = " ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                if row_text and len(row_text) <= 80:
+                    text = row_text
+                    if with_context and len(item.rows) <= 2:
+                        next_table = next(
+                            (nxt for kind2, nxt in body_items[pos + 1:] if kind2 == "table"),
+                            None
+                        )
+                        if next_table is not None:
+                            snippet = _cost_table_snippet(next_table)
+                            if snippet:
+                                text = f"{row_text} (followed by a table mentioning: {snippet})"
+                    index.append({"id": f"T{ti}R{ri}", "text": text, "row": row, "table": item})
+    return index
+
+
+# Section-title synonyms confirmed from real documents. Applied directly to
+# candidate text (rather than left as a rule for the LLM to cross-reference)
+# since testing showed the LLM doesn't reliably apply a stated synonym rule
+# on its own, even when it's explicit — annotating the candidate itself
+# makes the match definitional instead of inferential.
+_KNOWN_SECTION_SYNONYMS = [
+    (re.compile(r"\bfunding\b", re.IGNORECASE), "Availability of Funds"),
+    (re.compile(r"\bavailability of funds\b", re.IGNORECASE), "Funding"),
+    (re.compile(r"\bestimated costs?\b", re.IGNORECASE), "Proposed Budget"),
+    (re.compile(r"\bproposed budget\b", re.IGNORECASE), "Estimated Costs"),
+    (re.compile(r"\bneed for\b", re.IGNORECASE), "Need For Deployment"),
+]
+
+
+def _annotate_synonym_text(text: str) -> str:
+    extras = [
+        synonym
+        for pattern, synonym in _KNOWN_SECTION_SYNONYMS
+        if pattern.search(text) and synonym.lower() not in text.lower()
+    ]
+    return f"{text} (also referred to as: {', '.join(extras)})" if extras else text
+
+
+def annotate_known_synonyms(candidates: list) -> list:
+    """Append known canonical synonym names directly onto matching
+    candidate headings, so the structure-review LLM sees the equivalence
+    as a fact about the text rather than a rule it has to apply itself.
+    """
+    return [_annotate_synonym_text(candidate) for candidate in candidates]
+
+
+def annotate_heading_index_synonyms(index: list) -> list:
+    """Like annotate_known_synonyms, but for build_heading_index() entries
+    — updates each entry's "text" in place (id/paragraph/row untouched).
+    """
+    for entry in index:
+        entry["text"] = _annotate_synonym_text(entry["text"])
+    return index
+
+
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"<[^>]{1,40}>")
+_TEMPLATE_BARE_PLACEHOLDER_RE = re.compile(r"^<[^>]{1,40}>$")
+
+
+def _clean_template_heading_candidates(candidates: list) -> list:
+    """Filter the AOR template's raw candidate headings down to genuine
+    section titles, dropping cover-page metadata and placeholder filler.
+
+    Tuned to this specific template's conventions (cover-page block, then a
+    bare <TITLE> placeholder, then the body sections) — re-verify against
+    the actual file if the reference template is ever swapped out.
+    """
+    # Drop the cover-page block (page count / forum / EMS reference / date)
+    # that precedes the title placeholder in this template's layout.
+    cut_index = None
+    for i, candidate in enumerate(candidates):
+        if _TEMPLATE_BARE_PLACEHOLDER_RE.match(candidate.strip()):
+            cut_index = i
+            break
+    working = candidates[cut_index + 1:] if cut_index is not None else candidates
+
+    cleaned = []
+    seen = set()
+    for raw in working:
+        text = re.sub(r"\s+", " ", raw.strip())
+        if not text or ":" in text:
+            # Drops table captions ("Table 1: Cost Breakdown Table") and
+            # the signature block ("Prepared by:", "Vetted by:", etc.).
+            continue
+        stripped = re.sub(r"\s+", " ", _TEMPLATE_PLACEHOLDER_RE.sub("", text)).strip()
+        if sum(ch.isalpha() for ch in stripped) < 3:
+            # Pure filler like "<to fill up>" or a bare "<xx>".
+            continue
+        # Use the placeholder-stripped text (e.g. "Need for" rather than
+        # "Need for <xx>") so the reference name reads as natural language
+        # for the LLM comparison, instead of raw template placeholder syntax.
+        text = stripped
+        key = stripped.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+    return cleaned
 
 
 def extract_excel(contents: bytes, filename: str):
@@ -698,6 +893,28 @@ def compute_aor_metrics(inputs: dict):
 def identify_missing_fields(inputs: dict, metrics: dict):
     missing = []
 
+    # These must come from the document — cannot be derived
+    doc_required = [
+        "project_title",
+        "purpose",
+        "problem_statement",
+        "capex",
+        "opex",
+        "project_duration_years",
+    ]
+    for field in doc_required:
+        if inputs.get(field) is None:
+            missing.append(field)
+
+    # These can be derived — only flag as missing if computation also failed
+    derived_required = {
+        "annual_manpower_impact_fte": metrics.get("annual_manpower_impact_fte"),
+        "annual_benefit": metrics.get("annual_benefit"),
+    }
+    for field, computed_value in derived_required.items():
+        if inputs.get(field) is None and computed_value is None:
+            missing.append(field)
+
     return missing
 
 def determine_approving_authority(amount):
@@ -778,6 +995,9 @@ def determine_approving_authority(amount):
 # =========================================================
 
 FIELD_LABELS = {
+    "project_title": "Project Title",
+    "purpose": "Purpose",
+    "problem_statement": "Problem Statement",
     "capex": "Capital Expenditure (CAPEX)",
     "opex": "Operating Expenditure (OPEX)",
     "project_duration_years": "Project Duration (years)",
@@ -786,6 +1006,9 @@ FIELD_LABELS = {
 }
 
 FIELD_PLACEHOLDERS = {
+    "project_title": "[Project Title — enter the name of the ICT project]",
+    "purpose": "[Purpose — enter what the ICT project seeks to achieve]",
+    "problem_statement": "[Problem Statement — enter the gap, pain point, or problem being addressed]",
     "capex": "[CAPEX — enter the total capital expenditure, e.g. S$500,000]",
     "opex": "[OPEX — enter the total operating expenditure over the project duration, e.g. S$300,000]",
     "project_duration_years": "[Project Duration — enter the number of years, e.g. 3]",
@@ -812,6 +1035,95 @@ def build_missing_information_section(missing_fields: list) -> str:
     )
 
 
+_COST_SIGNAL_RE = re.compile(r"\b(capex|opex|budget|costs?)\b", re.IGNORECASE)
+_COST_LABEL_RE = re.compile(r"\b(capex|opex|budget|costs?)\s*[:=]", re.IGNORECASE)
+_COST_TABLE_ANNOTATION_RE = re.compile(r"\(followed by a table mentioning:", re.IGNORECASE)
+
+
+def _looks_like_cost_declaration(text: str) -> bool:
+    """True if `text` looks like it's actually declaring a cost/budget
+    figure or heading — not just prose that happens to mention the word
+    while discussing something else (e.g. "Based on the illustrative
+    CAPEX and OPEX, this project has a negative NEV." mentions both terms
+    but is NEV narrative, not a cost declaration).
+
+    Accepts: a "Label:"/"Label=" declaration (e.g. "CAPEX: S$500,000."),
+    the cost-table annotation, or a short heading/table-cell-like
+    candidate (<=6 words) that contains the term — genuine headings and
+    table cells are short; narrative sentences citing the term in passing
+    are not.
+    """
+    if _COST_TABLE_ANNOTATION_RE.search(text):
+        return True
+    if not _COST_SIGNAL_RE.search(text):
+        return False
+    if _COST_LABEL_RE.search(text):
+        return True
+    return len(text.split()) <= 6
+
+
+def resolve_cost_section_matches(section_matches: dict, heading_index: list) -> dict:
+    """Replace the LLM's answer for any standard section that is itself
+    about cost/budget (name contains capex/opex/budget/cost) with a fully
+    deterministic determination, ignoring what the LLM matched.
+
+    Testing repeatedly showed the LLM doesn't reliably avoid matching such
+    a section to unrelated content that merely cites cost figures in
+    passing (e.g. a Net Present Value narrative referencing CAPEX/OPEX
+    numbers), even with explicit prompt instructions not to — so presence
+    is instead decided directly in code: present only if some candidate,
+    before any Annex boundary, looks like an actual cost declaration or
+    heading (see _looks_like_cost_declaration), not just prose mentioning
+    the term; otherwise missing.
+    """
+    annex_start = _find_annex_start(heading_index)
+    main_body_entries = (
+        heading_index[:annex_start] if annex_start is not None else heading_index
+    )
+    match_id = next(
+        (entry["id"] for entry in main_body_entries if _looks_like_cost_declaration(entry["text"])),
+        None
+    )
+
+    resolved = dict(section_matches)
+    for section_name in section_matches:
+        if _COST_SIGNAL_RE.search(section_name):
+            resolved[section_name] = match_id
+    return resolved
+
+
+def deduplicate_reused_matches(section_matches: dict, heading_index: list) -> dict:
+    """If the LLM matched the same candidate heading to more than one
+    standard section — which its own instructions tell it not to do, but
+    testing shows it doesn't always follow, especially for lexically
+    similar section names like "Approval" vs. "Approving Authority" —
+    keep the match only for whichever section's name has the most word
+    overlap with the candidate's own text, and null out the rest.
+    """
+    entry_by_id = {entry["id"]: entry for entry in heading_index}
+    sections_by_match = {}
+    for section, matched_id in section_matches.items():
+        if matched_id:
+            sections_by_match.setdefault(matched_id, []).append(section)
+
+    resolved = dict(section_matches)
+    for matched_id, sections in sections_by_match.items():
+        if len(sections) <= 1:
+            continue
+        candidate_text = entry_by_id.get(matched_id, {}).get("text", "").lower()
+        candidate_words = set(re.findall(r"[a-z]+", candidate_text))
+
+        def overlap(section_name):
+            section_words = set(re.findall(r"[a-z]+", section_name.lower()))
+            return len(section_words & candidate_words)
+
+        best_section = max(sections, key=overlap)
+        for section in sections:
+            if section != best_section:
+                resolved[section] = None
+    return resolved
+
+
 def build_structure_review_section(missing_sections: list, order_note: str) -> str:
     """Deterministically render the "Document Structure Review" section
     from the LLM's structured missing_sections/order_note output, rather
@@ -830,37 +1142,110 @@ def build_structure_review_section(missing_sections: list, order_note: str) -> s
     return "6. Document Structure Review\n\n" + text
 
 
-def build_amended_docx(contents: bytes, missing_fields: list, missing_sections: list = None) -> bytes:
-    """Append a "Missing Information" section with fill-in placeholders
-    to the user's own uploaded document, so they can complete it in Word.
+def _insert_highlighted_paragraph_before(anchor_element, parent, text: str) -> Paragraph:
+    """Insert a new highlighted paragraph immediately before `anchor_element`
+    (a paragraph's `_p`, or a table's `_tbl`). Repeated calls against the
+    same fixed anchor naturally preserve insertion order (each new
+    paragraph lands directly before the anchor, pushing earlier
+    insertions further back), so no chaining/tracking is needed here.
+    """
+    new_p = OxmlElement("w:p")
+    anchor_element.addprevious(new_p)
+    new_paragraph = Paragraph(new_p, parent)
+    run = new_paragraph.add_run(text)
+    run.bold = True
+    run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+    return new_paragraph
+
+
+def build_amended_docx(
+    contents: bytes,
+    missing_fields: list,
+    missing_sections: list = None,
+    section_matches: dict = None,
+    standard_sections: list = None,
+) -> bytes:
+    """Amend the user's own uploaded document: fill-in placeholders for
+    missing fields are appended at the end, while missing sections are
+    inserted as highlighted headings at their correct position.
+
+    Each missing section is anchored to the nearest FOLLOWING present
+    section and inserted right BEFORE it — never to the nearest preceding
+    section (inserting "after" a preceding section's heading lands in the
+    middle of that section's own content, e.g. before its data table,
+    which is wrong, and there's no reliable way to know where a section's
+    content ends in order to insert after all of it). Anchoring forward
+    always lands at a true section boundary. Falls back to listing at the
+    end of the document if nothing present follows (e.g. the missing
+    section is meant to be last) or if section_matches/standard_sections
+    aren't supplied.
     """
     doc = _load_docx(contents)
+    missing_sections = missing_sections or []
+    unplaced_sections = list(missing_sections)
 
-    doc.add_page_break()
-    try:
-        doc.add_heading("Missing Information — Please Complete", level=1)
-    except KeyError:
-        # Document has no "Heading 1" style defined — fall back to bold text.
-        heading_paragraph = doc.add_paragraph()
-        heading_paragraph.add_run("Missing Information — Please Complete").bold = True
-    doc.add_paragraph(
-        "The fields below were not found in your submission. "
-        "Please replace each highlighted instruction with the correct value."
-    )
+    if section_matches and standard_sections:
+        heading_index = _heading_index_from_doc(doc, include_tables=True)
+        entry_by_id = {entry["id"]: entry for entry in heading_index}
+        unplaced_sections = []
 
-    for field in missing_fields:
-        label = FIELD_LABELS.get(field, field.replace("_", " ").title())
-        placeholder = FIELD_PLACEHOLDERS.get(field, f"[{label} — enter value here]")
-        paragraph = doc.add_paragraph()
-        paragraph.add_run(f"The {label} is missing — please include: ").bold = True
-        placeholder_run = paragraph.add_run(placeholder)
-        placeholder_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        def anchor_element_and_parent(entry):
+            if "paragraph" in entry:
+                return entry["paragraph"]._p, entry["paragraph"]._parent
+            return entry["table"]._tbl, doc
 
-    for section in (missing_sections or []):
-        paragraph = doc.add_paragraph()
-        paragraph.add_run("Missing section — ").bold = True
-        section_run = paragraph.add_run(f'please add a "{section}" section to your AOR.')
-        section_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        for section_name in standard_sections:
+            if section_name not in missing_sections:
+                continue
+
+            idx = standard_sections.index(section_name)
+            heading_text = f'Missing Section — "{section_name}" should go here. Please add this section.'
+
+            forward_entry = None
+            for i in range(idx + 1, len(standard_sections)):
+                next_id = section_matches.get(standard_sections[i])
+                if next_id and next_id in entry_by_id:
+                    forward_entry = entry_by_id[next_id]
+                    break
+
+            if forward_entry is not None:
+                anchor_element, parent = anchor_element_and_parent(forward_entry)
+                _insert_highlighted_paragraph_before(anchor_element, parent, heading_text)
+                continue
+
+            # No following present section to anchor before — we can't
+            # reliably tell where a preceding section's own content ends
+            # (that's exactly the mid-content bug forward-anchoring
+            # avoids), so a missing trailing section falls back to the
+            # end-of-document listing rather than guessing a position.
+            unplaced_sections.append(section_name)
+
+    if missing_fields or unplaced_sections:
+        doc.add_page_break()
+        try:
+            doc.add_heading("Missing Information — Please Complete", level=1)
+        except KeyError:
+            # Document has no "Heading 1" style defined — fall back to bold text.
+            heading_paragraph = doc.add_paragraph()
+            heading_paragraph.add_run("Missing Information — Please Complete").bold = True
+        doc.add_paragraph(
+            "The fields below were not found in your submission. "
+            "Please replace each highlighted instruction with the correct value."
+        )
+
+        for field in missing_fields:
+            label = FIELD_LABELS.get(field, field.replace("_", " ").title())
+            placeholder = FIELD_PLACEHOLDERS.get(field, f"[{label} — enter value here]")
+            paragraph = doc.add_paragraph()
+            paragraph.add_run(f"The {label} is missing — please include: ").bold = True
+            placeholder_run = paragraph.add_run(placeholder)
+            placeholder_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+
+        for section in unplaced_sections:
+            paragraph = doc.add_paragraph()
+            paragraph.add_run("Missing section — ").bold = True
+            section_run = paragraph.add_run(f'please add a "{section}" section to your AOR.')
+            section_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -871,6 +1256,8 @@ def build_amended_docx(contents: bytes, missing_fields: list, missing_sections: 
 # PROMPTS
 # =========================================================
 
+# Fallback list, used only if the reference AOR template can't be read or
+# parsed — the primary source of truth is get_template_reference_sections().
 STANDARD_AOR_SECTIONS = [
     "Purpose",
     "Background",
@@ -886,9 +1273,55 @@ STANDARD_AOR_SECTIONS = [
     "Annex D: Finance Manual Reference",
 ]
 
+_template_reference_sections_cache = None
 
-def build_structure_review_prompt(candidate_headings: list, standard_sections: list) -> str:
-    headings_text = "\n".join(f"- {h}" for h in candidate_headings)
+
+def get_template_reference_sections() -> list:
+    """Reference section list for Document Structure Review, derived from
+    the AOR template (AOR_TEMPLATE_PATH). Falls back to
+    STANDARD_AOR_SECTIONS if the template is missing/unreadable or yields
+    no usable headings. Computed once per process and cached, since the
+    template doesn't change between requests.
+    """
+    global _template_reference_sections_cache
+    if _template_reference_sections_cache is not None:
+        return _template_reference_sections_cache
+
+    sections = STANDARD_AOR_SECTIONS
+    try:
+        contents = AOR_TEMPLATE_PATH.read_bytes()
+        candidates = extract_candidate_headings(contents, include_tables=False)
+        cleaned = _clean_template_heading_candidates(candidates)
+        if cleaned:
+            sections = cleaned
+    except Exception as e:
+        logging.warning("template reference sections unavailable, using fallback: %s", e)
+
+    _template_reference_sections_cache = sections
+    return sections
+
+
+_ANNEX_RE = re.compile(r"\bannex\b", re.IGNORECASE)
+
+
+def _find_annex_start(heading_index: list):
+    """Index into heading_index of the first candidate that looks like an
+    Annex heading, or None if the document has no recognizable Annex.
+    """
+    return next(
+        (i for i, entry in enumerate(heading_index) if _ANNEX_RE.search(entry["text"])),
+        None
+    )
+
+
+def build_structure_review_prompt(heading_index: list, standard_sections: list) -> str:
+    annex_start = _find_annex_start(heading_index)
+    heading_lines = []
+    for i, entry in enumerate(heading_index):
+        if i == annex_start:
+            heading_lines.append("--- EVERYTHING BELOW THIS LINE IS INSIDE AN ANNEX ---")
+        heading_lines.append(f"- {entry['id']}: {entry['text']}")
+    headings_text = "\n".join(heading_lines)
     standard_text = "\n".join(f"- {s}" for s in standard_sections)
     return f"""
 You are reviewing whether an ICT AOR (Approval of Requirements) Word document
@@ -898,9 +1331,23 @@ Standard AOR sections expected (in this rough order):
 {standard_text}
 
 Short/standalone lines found in the uploaded document (candidate section
-headings, in document order — not every line here is actually a heading,
-use judgement to tell real section headings apart from other short text):
+headings, each prefixed with its id, in document order — not every line
+here is actually a heading, use judgement to tell real section headings
+apart from other short text):
 {headings_text}
+
+Sections whose standard name itself starts with "Annex" may be matched to
+content anywhere, including below the "EVERYTHING BELOW THIS LINE IS
+INSIDE AN ANNEX" marker. Every OTHER standard section (i.e. any main-body
+section, not itself an annex) must be matched to a candidate heading that
+appears ABOVE that marker. Content that only appears inside an Annex does
+NOT satisfy a main-body section's requirement, even if it discusses the
+exact same topic in detail — e.g. if the main body never has its own
+"Proposed Budget"/"Estimated Costs" section, but Annex B repeats a
+detailed CAPEX/OPEX cost breakdown, "Proposed Budget" must still be
+reported as missing, because the main body itself never presented it. The
+Annex is supplementary backup detail, not a substitute for the main body
+actually having the section.
 
 For each standard section, decide whether it is present: only count it as
 present if one of the candidate lines above is itself a heading/title for
@@ -910,15 +1357,57 @@ because related content is mentioned in passing elsewhere without its own
 heading — a heading that has been removed, leaving only orphaned prose
 behind, must still be reported as missing.
 
+Known synonym pairs — treat these as ALWAYS the same section regardless of
+which wording the document uses (confirmed real-world renamings, not just
+a general similarity heuristic):
+- "Funding" = "Availability of Funds"
+- "Estimated Costs" = "Proposed Budget" = "Cost Breakdown"
+- "Need for <xx>" = "Need For Deployment" = "Need for" (any "Need for ..."
+  heading satisfies this section, regardless of what follows "for")
+
+Be lenient about matching a heading to a standard section by CONCEPT, not
+just similar wording — AOR documents commonly use different titles for the
+same section. This leniency has ONE specific, narrow trigger: a candidate
+line that literally includes the annotation "(followed by a table
+mentioning: ...)" naming CAPEX/OPEX/cost figures — that annotation means a
+structured cost-breakdown TABLE immediately follows that heading, which is
+strong evidence the heading itself IS a cost/budget disclosure section
+under a different title. For example, a candidate "8 Estimated Costs
+(followed by a table mentioning: CAPEX, OPEX, Total CAPEX, Total OPEX)"
+DOES satisfy a standard section named "Proposed Budget", even though the
+two titles share no words.
+
+Do NOT apply this leniency just because a plain paragraph MENTIONS cost
+figures, CAPEX, OPEX, or dollar amounts in passing while discussing a
+different topic — that is normal narrative, not a cost/budget section.
+For example, a heading like "Net Economic Value (NEV) Analysis" followed
+by a sentence that cites CAPEX/OPEX numbers to explain a calculation is
+NEV analysis referencing figures from elsewhere, NOT a "Proposed
+Budget"/"Estimated Costs" section — do not match it to either. If nothing
+in the document has the "(followed by a table mentioning: ...)" signal
+for cost/budget, and no heading is directly labelled CAPEX/OPEX/Proposed
+Budget/Estimated Costs itself, the cost/budget standard section must be
+reported as missing, even if cost figures are mentioned somewhere in
+passing.
+
+Each candidate id may be used as the match for AT MOST ONE standard
+section — never reuse the same candidate for two different standard
+sections.
+
 Also check whether the sections that ARE present appear in a reasonable
 order relative to the standard list, or if something is clearly out of
 place.
 
 Return ONLY a valid JSON object with this exact structure:
 {{
-  "missing_sections": ["<standard section name>", ...],
+  "section_matches": {{"<standard section name>": "<id of the matching candidate line, or null if missing>", ...}},
   "order_note": "<one sentence if something is out of order, otherwise an empty string>"
 }}
+
+`section_matches` MUST have exactly one entry for every standard section
+listed above, using the id (e.g. "P12" or "T2R0") exactly as it appears
+before the colon in the candidate list — do not invent ids, and do not
+include the heading text itself as the value.
 
 Do NOT comment on financial figures or data completeness — that is handled
 separately. Focus only on document structure. Do not wrap the JSON in
@@ -964,9 +1453,44 @@ Return exactly this JSON structure:
 }}
 
 Field guidance:
-- "project_title": title or name of the ICT project.
-- "purpose": what the ICT project seeks to achieve.
+- "project_title": title or name of the ICT project, as explicitly stated
+  (e.g. a title line near the top of the document). Do NOT invent or infer
+  a title from a description elsewhere.
+- "purpose": what the ICT project seeks to achieve. Use ONLY text that
+  appears under a heading/section labelled "Purpose" (or a clear synonym
+  like "Objective"). Do NOT use similar-sounding content from a
+  DIFFERENT section (e.g. "Background", "Need For Deployment", "Scope of
+  Work") just because it describes a related goal — those are distinct
+  sections in the AOR template and must not be cross-substituted, even if
+  the wording overlaps. If there is no section labelled "Purpose" (or
+  synonym) with actual content of its own, use null.
 - "problem_statement": the gap, pain point, or problem being addressed.
+  Use ONLY text that appears under a heading/section labelled "Background"
+  or "Problem Statement" (or a clear synonym). Do NOT use content from a
+  different section (e.g. "Purpose", "Need For Deployment") even if it
+  touches on a similar theme. If no such section with actual content
+  exists, use null.
+
+Worked example (a document where the "Purpose" section was removed, but a
+different section, "Need For Deployment", happens to contain similar-
+sounding text):
+
+  2   Need For Deployment of the Sample System
+      a. Based on the trial results, the system has demonstrated
+         tangible efficiency benefits for non-critical administrative
+         use. The team has assessed that the capability can be
+         implemented to:
+      b. assist business units in submitting, approving and tracking
+         shared-resource bookings through a common workflow; and
+  3   expand reporting capability for planning, trend analysis and
+      review of common resource utilisation.
+
+There is no "Purpose" heading anywhere in this example. The CORRECT
+extraction is "purpose": null — it would be WRONG to extract "assist
+business units in submitting, approving and tracking shared-resource
+bookings..." as the purpose just because it sounds like one; that text
+belongs to "Need For Deployment", a different section, and does not
+satisfy the "purpose" field.
 - "capex": one-off capital expenditure (implementation, hardware, cybersecurity, contingency).
   Use a figure only if it is either (a) directly labelled CAPEX or "Capital Expenditure" in the
   same sentence/phrase, or (b) a Sub Total / Grand Total / "Say" figure inside a table section
@@ -1333,20 +1857,31 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
     )
 
     missing_sections = []
+    section_matches = {}
+    standard_sections = []
     if file and file.filename.lower().endswith(".docx"):
         try:
-            candidate_headings = extract_candidate_headings(contents)
-            structure_prompt = build_structure_review_prompt(candidate_headings, STANDARD_AOR_SECTIONS)
+            standard_sections = get_template_reference_sections()
+            heading_index = annotate_heading_index_synonyms(
+                build_heading_index(contents, with_context=True)
+            )
+            structure_prompt = build_structure_review_prompt(heading_index, standard_sections)
             structure_response = llm.invoke([
                 SystemMessage(content=structure_prompt),
                 HumanMessage(content="Assess the document's structure against the standard AOR format.")
             ])
             structure_data = parse_json_from_llm(structure_response.content)
             if isinstance(structure_data, dict):
-                missing_sections = structure_data.get("missing_sections") or []
+                section_matches = structure_data.get("section_matches") or {}
+                section_matches = resolve_cost_section_matches(section_matches, heading_index)
+                section_matches = deduplicate_reused_matches(section_matches, heading_index)
                 order_note = structure_data.get("order_note") or ""
             else:
                 order_note = ""
+            missing_sections = [
+                section for section in standard_sections
+                if not section_matches.get(section)
+            ]
             full_result += "\n\n" + build_structure_review_section(missing_sections, order_note)
         except Exception:
             pass
@@ -1360,7 +1895,10 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
 
     if file and (missing_fields or missing_sections):
         amended_docx_base64 = base64.b64encode(
-            build_amended_docx(contents, missing_fields, missing_sections)
+            build_amended_docx(
+                contents, missing_fields, missing_sections,
+                section_matches=section_matches, standard_sections=standard_sections
+            )
         ).decode("ascii")
         amended_docx_filename = f"amended-{file.filename}"
     elif not file:
