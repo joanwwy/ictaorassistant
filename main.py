@@ -226,12 +226,14 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
         title = title_lines[0] if title_lines else ""
         title = title.replace("**", "").strip()
 
-        title, sections = parse_aor_sections(result_text)
-        print("PARSED SECTIONS:", list(sections.keys()))
-        print("NEED SECTION:", sections.get("need", "MISSING"))
-        print("NEV SECTION:", sections.get("nev", "MISSING"))
-
         return title, sections
+
+
+    # Debug/test code outside the function
+    title, sections = parse_aor_sections(result_text)
+    print("PARSED SECTIONS:", list(sections.keys()))
+    print("NEED SECTION:", sections.get("need", "MISSING"))
+    print("NEV SECTION:", sections.get("nev", "MISSING"))
 
 
     def replace_paragraph_text(paragraph, new_text: str):
