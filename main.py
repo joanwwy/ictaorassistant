@@ -121,7 +121,17 @@ def _strip_dangling_relationships(contents: bytes) -> bytes:
     return buffer.getvalue()
 
 def build_result_docx(result_text: str) -> bytes:
-    """Build a Word document containing the assessment result for text-only submissions."""
+    """Build a Word document containing the assessment result for text-only submissions.
+    
+    Mirrors the formatResult() logic in server.js:
+      - **text** alone on a line → Heading
+      - - or * bullet lines     → unordered list (via list paragraph style)
+      - 1. 2. numbered lines    → ordered list
+      - **bold** inline         → bold run within a paragraph
+      - blank lines             → paragraph break
+    """
+    import re
+
     doc = DocxDocument()
     try:
         doc.add_heading("ICT AOR Assessment", level=1)
@@ -129,8 +139,57 @@ def build_result_docx(result_text: str) -> bytes:
         heading_paragraph = doc.add_paragraph()
         heading_paragraph.add_run("ICT AOR Assessment").bold = True
 
+    def add_inline_markdown(paragraph, text: str):
+        """Split text on **...** markers and add runs with bold toggled."""
+        parts = re.split(r'\*\*(.+?)\*\*', text)
+        for i, part in enumerate(parts):
+            if not part:
+                continue
+            run = paragraph.add_run(part)
+            run.bold = (i % 2 == 1)  # odd indices are inside **...**
+
     for line in result_text.split("\n"):
-        doc.add_paragraph(line)
+        stripped = line.strip()
+
+        if not stripped:
+            # Blank line — add an empty paragraph as a spacer
+            doc.add_paragraph()
+            continue
+
+        # **Heading text** or **Heading text**: → Word Heading 2
+        heading_match = re.match(r'^\*\*(.+?)\*\*:?$', stripped)
+        if heading_match:
+            try:
+                doc.add_heading(heading_match.group(1), level=2)
+            except KeyError:
+                p = doc.add_paragraph()
+                p.add_run(heading_match.group(1)).bold = True
+            continue
+
+        # - bullet or * bullet → List Bullet style
+        bullet_match = re.match(r'^[-*]\s+(.*)', stripped)
+        if bullet_match:
+            try:
+                p = doc.add_paragraph(style='List Bullet')
+            except KeyError:
+                p = doc.add_paragraph()
+                p.add_run('• ')
+            add_inline_markdown(p, bullet_match.group(1))
+            continue
+
+        # 1. 2. numbered list → List Number style
+        numbered_match = re.match(r'^\d+\.\s+(.*)', stripped)
+        if numbered_match:
+            try:
+                p = doc.add_paragraph(style='List Number')
+            except KeyError:
+                p = doc.add_paragraph()
+            add_inline_markdown(p, numbered_match.group(1))
+            continue
+
+        # Plain paragraph (may contain inline **bold**)
+        p = doc.add_paragraph()
+        add_inline_markdown(p, stripped)
 
     buffer = io.BytesIO()
     doc.save(buffer)
