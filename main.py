@@ -250,8 +250,11 @@ def build_result_docx(result_text: str) -> bytes:
             if normalised in SECTION_ALIASES:
                 return
 
-            replace_paragraph_text(paragraph, new_text)
-            return
+            if first_content_paragraph is None:
+                first_content_paragraph = paragraph
+                replace_paragraph_text(paragraph, new_text)
+            else:
+                paragraph.text = ""
 
     title, sections = parse_aor_sections(result_text)
 
