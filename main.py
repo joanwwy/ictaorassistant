@@ -124,7 +124,7 @@ def _strip_dangling_relationships(contents: bytes) -> bytes:
 
     return buffer.getvalue()
 
-def build_result_docx(result_text: str) -> bytes:
+def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = None) -> bytes:
     """
     Populate the existing AOR template sections using the drafted AOR text.
     The template's layout, tables, headers, footers and annexes are retained.
@@ -153,6 +153,86 @@ def build_result_docx(result_text: str) -> bytes:
         text = text.replace("**", "")
         text = text.rstrip(":")
         return re.sub(r"\s+", " ", text).strip().lower()
+
+    def populate_budget_table(inputs: dict, metrics: dict):
+        capex_items = inputs.get("capex_items", [])
+        opex_items = inputs.get("opex_items", [])
+        grand_total = inputs.get("grand_total", "")
+        total_capex = metrics.get("total_capex", "")
+        total_opex = metrics.get("total_opex", "")
+
+        for table in doc.tables:
+            # Check if this looks like the budget table by scanning headers
+            header_text = " ".join(
+                cell.text.strip().lower()
+                for cell in table.rows[0].cells
+            )
+            if "description" not in header_text and "cost" not in header_text:
+                continue
+
+            # Find CAPEX and OPEX row ranges
+            capex_start = None
+            opex_start = None
+            total_capex_row = None
+            total_opex_row = None
+            grand_total_row = None
+
+            for i, row in enumerate(table.rows):
+                first_cell = row.cells[0].text.strip().lower()
+                if "capex" in first_cell and capex_start is None:
+                    capex_start = i + 1
+                elif "total capex" in first_cell:
+                    total_capex_row = i
+                elif "opex" in first_cell and opex_start is None:
+                    opex_start = i + 1
+                elif "total opex" in first_cell:
+                    total_opex_row = i
+                elif "grand total" in first_cell:
+                    grand_total_row = i
+
+            # Fill CAPEX rows
+            if capex_start is not None:
+                for j, item in enumerate(capex_items):
+                    row_index = capex_start + j
+                    if total_capex_row and row_index >= total_capex_row:
+                        break
+                    row = table.rows[row_index]
+                    cells = row.cells
+                    if len(cells) >= 3:
+                        cells[0].text = str(j + 1)
+                        cells[1].text = item.get("description", "")
+                        cells[2].text = str(item.get("amount", ""))
+
+            # Fill Total CAPEX
+            if total_capex_row is not None:
+                cells = table.rows[total_capex_row].cells
+                if len(cells) >= 3:
+                    cells[2].text = str(total_capex) if total_capex else ""
+
+            # Fill OPEX rows
+            if opex_start is not None:
+                for j, item in enumerate(opex_items):
+                    row_index = opex_start + j
+                    if total_opex_row and row_index >= total_opex_row:
+                        break
+                    row = table.rows[row_index]
+                    cells = row.cells
+                    if len(cells) >= 3:
+                        cells[0].text = str(len(capex_items) + j + 1)
+                        cells[1].text = item.get("description", "")
+                        cells[2].text = str(item.get("amount", ""))
+
+            # Fill Total OPEX
+            if total_opex_row is not None:
+                cells = table.rows[total_opex_row].cells
+                if len(cells) >= 3:
+                    cells[2].text = str(total_opex) if total_opex else ""
+
+            # Fill Grand Total
+            if grand_total_row is not None:
+                cells = table.rows[grand_total_row].cells
+                if len(cells) >= 3:
+                    cells[2].text = str(grand_total) if grand_total else ""
 
     def parse_aor_sections(text: str):
         sections = {}
@@ -237,6 +317,7 @@ def build_result_docx(result_text: str) -> bytes:
             return
 
         paragraphs = doc.paragraphs
+        first_content_paragraph = None  # <-- move this OUTSIDE the loop
 
         for index in range(heading_index + 1, len(paragraphs)):
             paragraph = paragraphs[index]
@@ -249,15 +330,12 @@ def build_result_docx(result_text: str) -> bytes:
 
             if normalised in SECTION_ALIASES:
                 return
-            
-            first_content_paragraph = None
-            
 
             if first_content_paragraph is None:
                 first_content_paragraph = paragraph
                 replace_paragraph_text(paragraph, new_text)
             else:
-                paragraph.text = ""
+                paragraph.text = ""  # clear subsequent paragraphs in the section"
 
     title, sections = parse_aor_sections(result_text)
 
@@ -325,6 +403,10 @@ def build_result_docx(result_text: str) -> bytes:
         ["Approval"],
         sections.get("approval", "")
     )
+
+    # Populate budget table if structured data is available
+    if inputs and metrics:
+        populate_budget_table(inputs, metrics)
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -1321,7 +1403,7 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         amended_docx_filename = f"amended-{file.filename}"
     elif not file:
         amended_docx_base64 = base64.b64encode(
-            build_result_docx(full_result)
+            build_result_docx(full_result, inputs=extracted_inputs, metrics=computed_metrics)
         ).decode("ascii")
         amended_docx_filename = "aor-assessment.docx"
 
