@@ -190,43 +190,43 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
                     row.cells[last_cell_index].text = fmt(grand_total)
 
     def parse_aor_sections(text: str):
-    sections = {}
-    title_lines = []
-    current_section = None
-    current_lines = []
+        sections = {}
+        title_lines = []
+        current_section = None
+        current_lines = []
 
-    def save_current_section():
-        if current_section and current_lines:
-            sections[current_section] = "\n".join(
-                line for line in current_lines if line.strip()
-            ).strip()
+        def save_current_section():
+            if current_section and current_lines:
+                sections[current_section] = "\n".join(
+                    line for line in current_lines if line.strip()
+                ).strip()
 
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
 
-        if not line:
-            continue
+            if not line:
+                continue
 
-        normalised = normalise_heading(line)
-        detected_section = SECTION_ALIASES.get(normalised)
+            normalised = normalise_heading(line)
+            detected_section = SECTION_ALIASES.get(normalised)
 
-        if detected_section:
-            save_current_section()
-            current_section = detected_section
-            current_lines = []
-            continue
+            if detected_section:
+                save_current_section()
+                current_section = detected_section
+                current_lines = []
+                continue
 
-        if current_section is None:
-            title_lines.append(line)
-        else:
-            current_lines.append(line)
+            if current_section is None:
+                title_lines.append(line)
+            else:
+                current_lines.append(line)
 
-    save_current_section()
+        save_current_section()
 
-    title = title_lines[0] if title_lines else ""
-    title = title.replace("**", "").strip()
+        title = title_lines[0] if title_lines else ""
+        title = title.replace("**", "").strip()
 
-    return title, sections
+        return title, sections
 
 # Debug/test code — must be at module level, not inside the function
 title, sections = parse_aor_sections(result_text)
