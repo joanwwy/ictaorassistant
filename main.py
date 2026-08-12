@@ -137,10 +137,6 @@ def build_result_docx(result_text: str) -> bytes:
 
     doc = DocxDocument(str(AOR_TEMPLATE_PATH))
 
-    body = doc.element.body
-    for element in list(body):
-        body.remove(element)
-
     try:
         doc.add_heading("ICT AOR Assessment", level=1)
     except KeyError:
@@ -921,6 +917,109 @@ Stop after section 4. Do NOT write a "Missing Information" section yourself —
 it will be added separately from the authoritative missing fields list above.
 """
 
+def build_aor_drafting_prompt(
+    context: str,
+    inputs: dict,
+    metrics: dict,
+    approval_info
+):
+    return f"""
+You are drafting a complete CAAS ICT AOR paper.
+
+Use the extracted inputs below.
+
+Extracted Inputs:
+{json.dumps(inputs, indent=2)}
+
+Computed Metrics:
+{json.dumps(metrics, indent=2)}
+
+Approval Information:
+{approval_info}
+
+Source Context:
+{context}
+
+Draft the AOR using this structure:
+
+TITLE
+
+Purpose
+
+Background
+
+Need For Deployment
+
+Scope of Work
+
+Estimated Costs
+
+Funding
+
+Approving Authority
+
+Approval
+
+Rules:
+- Write in formal CAAS paper style.
+- Use the extracted figures.
+- Use approval_info for the Approving Authority section.
+- Do not create Annexes.
+- Do not invent figures.
+- Return ONLY the completed AOR text.
+"""
+def build_aor_drafting_prompt(
+    context: str,
+    inputs: dict,
+    metrics: dict,
+    approval_info
+):
+    return f"""
+    
+You are drafting a complete ICT AOR paper.
+
+Use the extracted inputs below.
+
+Extracted Inputs:
+{json.dumps(inputs, indent=2, ensure_ascii=False)}
+
+Computed Metrics:
+{json.dumps(metrics, indent=2, ensure_ascii=False)}
+
+Approval Information:
+{approval_info}
+
+Context:
+{context}
+
+Draft the AOR using this structure:
+
+TITLE
+
+Purpose
+
+Background
+
+Need For Deployment
+
+Scope of Work
+
+Estimated Costs
+
+Funding
+
+Approving Authority
+
+Approval
+
+Rules:
+- Use formal CAAS paper writing style.
+- Use figures from the extracted inputs.
+- Use approval_info for the Approving Authority section.
+- Do not create Annexes.
+- Do not invent figures.
+- Return only the AOR text.
+"""
 
 # =========================================================
 # MAIN ENDPOINT
@@ -1030,18 +1129,18 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
     missing_fields = identify_missing_fields(extracted_inputs, computed_metrics)
     submission_complete = len(missing_fields) == 0
 
-    explanation_prompt = build_explanation_prompt(
+    aor_prompt = build_aor_drafting_prompt(
         context=context,
         inputs=extracted_inputs,
         metrics=computed_metrics,
-        missing_fields=missing_fields
+        approval_info=approval_info
     )
 
     final_response = llm.invoke([
-        SystemMessage(content=explanation_prompt),
-        HumanMessage(content=query.strip() or "Provide a full ICT AOR assessment.")
+        SystemMessage(content=aor_prompt),
+        HumanMessage(content="Draft the AOR.")
     ])
-
+    
     full_result = (
         final_response.content.rstrip()
         + "\n\n"
