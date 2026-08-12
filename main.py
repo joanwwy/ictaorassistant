@@ -136,6 +136,11 @@ def build_result_docx(result_text: str) -> bytes:
     import re
 
     doc = DocxDocument(str(AOR_TEMPLATE_PATH))
+
+    body = doc.element.body
+    for element in list(body):
+        body.remove(element)
+
     try:
         doc.add_heading("ICT AOR Assessment", level=1)
     except KeyError:
