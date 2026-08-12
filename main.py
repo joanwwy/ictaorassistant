@@ -24,6 +24,7 @@ from pypdf import PdfReader
 from docx import Document as DocxDocument
 from docx.enum.text import WD_COLOR_INDEX
 from pathlib import Path
+from docx.oxml.ns import qn
 
 BASE_DIR = Path(__file__).resolve().parent
 AOR_TEMPLATE_PATH = BASE_DIR / "templates" / "Sample AOR Template.docx"
@@ -124,76 +125,200 @@ def _strip_dangling_relationships(contents: bytes) -> bytes:
     return buffer.getvalue()
 
 def build_result_docx(result_text: str) -> bytes:
-    """Build a Word document containing the assessment result for text-only submissions.
-    
-    Mirrors the formatResult() logic in server.js:
-      - **text** alone on a line → Heading
-      - - or * bullet lines     → unordered list (via list paragraph style)
-      - 1. 2. numbered lines    → ordered list
-      - **bold** inline         → bold run within a paragraph
-      - blank lines             → paragraph break
     """
-    import re
+    Populate the existing AOR template sections using the drafted AOR text.
+    The template's layout, tables, headers, footers and annexes are retained.
+    """
 
     doc = DocxDocument(str(AOR_TEMPLATE_PATH))
 
-    try:
-        doc.add_heading("ICT AOR Assessment", level=1)
-    except KeyError:
-        heading_paragraph = doc.add_paragraph()
-        heading_paragraph.add_run("ICT AOR Assessment").bold = True
+    SECTION_ALIASES = {
+        "purpose": "purpose",
+        "background": "background",
+        "need for deployment": "need",
+        "need for deployment of the sample system": "need",
+        "scope of work": "scope",
+        "estimated costs": "costs",
+        "proposed budget": "costs",
+        "net economic value (nev) analysis and manpower capitalisation": "nev",
+        "net economic value analysis and manpower capitalisation": "nev",
+        "funding": "funding",
+        "availability of funds": "funding",
+        "approving authority": "authority",
+        "approval": "approval",
+    }
 
-    def add_inline_markdown(paragraph, text: str):
-        """Split text on **...** markers and add runs with bold toggled."""
-        parts = re.split(r'\*\*(.+?)\*\*', text)
-        for i, part in enumerate(parts):
-            if not part:
+    def normalise_heading(text: str) -> str:
+        text = re.sub(r"^\d+[\.\s]+", "", text.strip())
+        text = text.replace("**", "")
+        text = text.rstrip(":")
+        return re.sub(r"\s+", " ", text).strip().lower()
+
+    def parse_aor_sections(text: str):
+        sections = {}
+        title_lines = []
+        current_section = None
+        current_lines = []
+
+        def save_current_section():
+            if current_section and current_lines:
+                sections[current_section] = "\n".join(
+                    line for line in current_lines if line.strip()
+                ).strip()
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+
+            if not line:
                 continue
-            run = paragraph.add_run(part)
-            run.bold = (i % 2 == 1)  # odd indices are inside **...**
 
-    for line in result_text.split("\n"):
-        stripped = line.strip()
+            normalised = normalise_heading(line)
+            detected_section = SECTION_ALIASES.get(normalised)
 
-        if not stripped:
-            # Blank line — add an empty paragraph as a spacer
-            doc.add_paragraph()
-            continue
+            if detected_section:
+                save_current_section()
+                current_section = detected_section
+                current_lines = []
+                continue
 
-        # **Heading text** or **Heading text**: → Word Heading 2
-        heading_match = re.match(r'^\*\*(.+?)\*\*:?$', stripped)
-        if heading_match:
-            try:
-                doc.add_heading(heading_match.group(1), level=2)
-            except KeyError:
-                p = doc.add_paragraph()
-                p.add_run(heading_match.group(1)).bold = True
-            continue
+            if current_section is None:
+                title_lines.append(line)
+            else:
+                current_lines.append(line)
 
-        # - bullet or * bullet → List Bullet style
-        bullet_match = re.match(r'^[-*]\s+(.*)', stripped)
-        if bullet_match:
-            try:
-                p = doc.add_paragraph(style='List Bullet')
-            except KeyError:
-                p = doc.add_paragraph()
-                p.add_run('• ')
-            add_inline_markdown(p, bullet_match.group(1))
-            continue
+        save_current_section()
 
-        # 1. 2. numbered list → List Number style
-        numbered_match = re.match(r'^\d+\.\s+(.*)', stripped)
-        if numbered_match:
-            try:
-                p = doc.add_paragraph(style='List Number')
-            except KeyError:
-                p = doc.add_paragraph()
-            add_inline_markdown(p, numbered_match.group(1))
-            continue
+        title = title_lines[0] if title_lines else ""
+        title = title.replace("**", "").strip()
 
-        # Plain paragraph (may contain inline **bold**)
-        p = doc.add_paragraph()
-        add_inline_markdown(p, stripped)
+        return title, sections
+
+    def replace_paragraph_text(paragraph, new_text: str):
+        """
+        Replace paragraph contents while retaining the paragraph formatting.
+        """
+        paragraph_element = paragraph._p
+
+        for child in list(paragraph_element):
+            if child.tag == qn("w:pPr"):
+                continue
+            paragraph_element.remove(child)
+
+        lines = new_text.splitlines()
+
+        for index, line in enumerate(lines):
+            if index > 0:
+                paragraph.add_run().add_break()
+
+            cleaned_line = re.sub(r"^[-*]\s+", "", line.strip())
+            paragraph.add_run(cleaned_line)
+
+    def find_heading_index(heading_names):
+        names = {
+            normalise_heading(name)
+            for name in heading_names
+        }
+
+        for index, paragraph in enumerate(doc.paragraphs):
+            paragraph_heading = normalise_heading(paragraph.text)
+
+            if paragraph_heading in names:
+                return index
+
+        return None
+
+    def replace_section_body(heading_names, new_text: str):
+        if not new_text:
+            return
+
+        heading_index = find_heading_index(heading_names)
+
+        if heading_index is None:
+            return
+
+        paragraphs = doc.paragraphs
+
+        for index in range(heading_index + 1, len(paragraphs)):
+            paragraph = paragraphs[index]
+            paragraph_text = paragraph.text.strip()
+
+            if not paragraph_text:
+                continue
+
+            normalised = normalise_heading(paragraph_text)
+
+            if normalised in SECTION_ALIASES:
+                return
+
+            replace_paragraph_text(paragraph, new_text)
+            return
+
+    title, sections = parse_aor_sections(result_text)
+
+    # Replace the template title.
+    if title:
+        for paragraph in doc.paragraphs:
+            paragraph_text = paragraph.text.strip()
+
+            if "<TITLE>" in paragraph_text.upper():
+                replace_paragraph_text(
+                    paragraph,
+                    title.upper()
+                )
+                break
+
+    # Populate each corresponding template section.
+    replace_section_body(
+        ["Purpose"],
+        sections.get("purpose", "")
+    )
+
+    replace_section_body(
+        ["Background"],
+        sections.get("background", "")
+    )
+
+    replace_section_body(
+        [
+            "Need for <xx>",
+            "Need For Deployment",
+            "Need for Deployment of the Sample System"
+        ],
+        sections.get("need", "")
+    )
+
+    replace_section_body(
+        ["Scope of Work"],
+        sections.get("scope", "")
+    )
+
+    replace_section_body(
+        ["Proposed Budget", "Estimated Costs"],
+        sections.get("costs", "")
+    )
+
+    replace_section_body(
+        [
+            "Net Economic Value (NEV) Analysis and Manpower Capitalisation",
+            "Net Economic Value Analysis and Manpower Capitalisation"
+        ],
+        sections.get("nev", "")
+    )
+
+    replace_section_body(
+        ["Availability of Funds", "Funding"],
+        sections.get("funding", "")
+    )
+
+    replace_section_body(
+        ["Approving Authority"],
+        sections.get("authority", "")
+    )
+
+    replace_section_body(
+        ["Approval"],
+        sections.get("approval", "")
+    )
 
     buffer = io.BytesIO()
     doc.save(buffer)
