@@ -1396,6 +1396,10 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
     amended_docx_base64 = None
     amended_docx_filename = None
 
+    import logging
+    logging.warning(f"EXTRACTED INPUTS: {json.dumps(extracted_inputs, indent=2)}")
+    logging.warning(f"COMPUTED METRICS: {json.dumps(computed_metrics, indent=2)}")
+
     if file and (missing_fields or missing_sections):
         amended_docx_base64 = base64.b64encode(
             build_amended_docx(contents, missing_fields, missing_sections)
