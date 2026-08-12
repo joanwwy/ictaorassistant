@@ -1318,7 +1318,7 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         amended_docx_filename = f"amended-{file.filename}"
     elif not file:
         amended_docx_base64 = base64.b64encode(
-            build_result_docx(aor_draft)
+            build_result_docx(full_result)
         ).decode("ascii")
         amended_docx_filename = "aor-assessment.docx"
 
