@@ -526,57 +526,59 @@ def compute_aor_metrics(inputs: dict):
 def identify_missing_fields(inputs: dict, metrics: dict):
     missing = []
 
-    def determine_approving_authority(amount):
-        if amount is None:
-            return None
+    return missing
 
-        if amount <= 6000:
-            return (
-                "Deputy Director / Senior Assistant Director",
-                "Up to S$6,000"
-            )
+def determine_approving_authority(amount):
+    if amount is None:
+        return None
 
-        elif amount <= 100000:
-            return (
-                "Division Head",
-                "Up to S$100,000"
-            )
+    if amount <= 6000:
+        return (
+            "Deputy Director / Senior Assistant Director",
+            "Up to S$6,000"
+        )
 
-        elif amount <= 250000:
-            return (
-                "Senior Director",
-                "Up to S$250,000"
-            )
+    elif amount <= 100000:
+        return (
+            "Division Head",
+            "Up to S$100,000"
+        )
 
-        elif amount <= 500000:
-            return (
-                "Assistant/Deputy Director-General",
-                "Up to S$500,000"
-            )
+    elif amount <= 250000:
+        return (
+            "Senior Director",
+            "Up to S$250,000"
+        )
 
-        elif amount <= 1000000:
-            return (
-                "Director-General",
-                "Up to S$1 million"
-            )
+    elif amount <= 500000:
+        return (
+            "Assistant/Deputy Director-General",
+            "Up to S$500,000"
+        )
 
-        elif amount <= 5000000:
-            return (
-                "Management Committee",
-                "Up to S$5 million"
-            )
+    elif amount <= 1000000:
+        return (
+            "Director-General",
+            "Up to S$1 million"
+        )
 
-        elif amount <= 10000000:
-            return (
-                "Chairman",
-                "Up to S$10 million"
-            )
+    elif amount <= 5000000:
+        return (
+            "Management Committee",
+            "Up to S$5 million"
+        )
 
-        else:
-            return (
-                "Authority",
-                "Above S$10 million"
-            )
+    elif amount <= 10000000:
+        return (
+            "Chairman",
+            "Up to S$10 million"
+        )
+
+    else:
+        return (
+            "Authority",
+            "Above S$10 million"
+        )
 # =========================================================
 # DOCUMENT AMENDMENT
 # =========================================================
