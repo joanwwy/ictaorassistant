@@ -954,6 +954,8 @@ Scope of Work
 
 Estimated Costs
 
+Net Economic Value (NEV) Analysis and Manpower Capitalisation
+
 Funding
 
 Approving Authority
@@ -1006,6 +1008,8 @@ Scope of Work
 
 Estimated Costs
 
+Net Economic Value (NEV) Analysis and Manpower Capitalisation
+
 Funding
 
 Approving Authority
@@ -1019,6 +1023,16 @@ Rules:
 - Do not create Annexes.
 - Do not invent figures.
 - Return only the AOR text.
+- In the Net Economic Value section, state the following computed values exactly:
+  - Present Value of Benefits: use total_benefits_pv
+  - Present Value of Costs: use total_costs_pv
+  - Net Present Value: use net_present_value
+  - Benefit-Cost Ratio: use benefit_cost_ratio
+  - Annual Manpower Impact: use annual_manpower_impact_fte
+  - Annual Benefit: use annual_benefit
+- Do not recompute or alter the computed values.
+- If a computed value is null, state that it could not be calculated because the required information was not found.
+
 """
 
 # =========================================================
@@ -1140,7 +1154,7 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         SystemMessage(content=aor_prompt),
         HumanMessage(content="Draft the AOR.")
     ])
-    
+
     full_result = (
         final_response.content.rstrip()
         + "\n\n"
