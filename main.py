@@ -23,7 +23,10 @@ from langchain_community.vectorstores import FAISS
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 from docx.enum.text import WD_COLOR_INDEX
+from pathlib import Path
 
+BASE_DIR = Path(__file__).resolve().parent
+AOR_TEMPLATE_PATH = BASE_DIR / "templates" / "Sample AOR Template.docx"
 
 app = FastAPI()
 
@@ -132,7 +135,7 @@ def build_result_docx(result_text: str) -> bytes:
     """
     import re
 
-    doc = DocxDocument()
+    doc = DocxDocument(str(AOR_TEMPLATE_PATH))
     try:
         doc.add_heading("ICT AOR Assessment", level=1)
     except KeyError:
@@ -397,7 +400,8 @@ def clean_extracted_inputs(inputs: dict):
         "annual_benefit",
         "num_staff",
         "savings_duration_months",
-        "man_hour_rate"
+        "man_hour_rate",
+        "grand_total"
     ]
     cleaned = dict(inputs)
     for field in numeric_fields:
@@ -521,6 +525,61 @@ def compute_aor_metrics(inputs: dict):
 
 def identify_missing_fields(inputs: dict, metrics: dict):
     missing = []
+
+    def determine_approving_authority(amount):
+        if amount is None:
+            return None
+
+        if amount <= 6000:
+            return (
+                "Deputy Director / Senior Assistant Director",
+                "Up to S$6,000"
+            )
+
+        elif amount <= 100000:
+            return (
+                "Division Head",
+                "Up to S$100,000"
+            )
+
+        elif amount <= 250000:
+            return (
+                "Senior Director",
+                "Up to S$250,000"
+            )
+
+        elif amount <= 500000:
+            return (
+                "Assistant/Deputy Director-General",
+                "Up to S$500,000"
+            )
+
+        elif amount <= 1000000:
+            return (
+                "Director-General",
+                "Up to S$1 million"
+            )
+
+        elif amount <= 5000000:
+            return (
+                "Management Committee",
+                "Up to S$5 million"
+            )
+
+        elif amount <= 10000000:
+            return (
+                "Chairman",
+                "Up to S$10 million"
+            )
+
+        else:
+            return (
+                "Authority",
+                "Above S$10 million"
+            )
+# =========================================================
+# DOCUMENT AMENDMENT
+# =========================================================
 
     # These must come from the document — cannot be derived
     doc_required = ["capex", "opex", "project_duration_years"]
@@ -725,6 +784,7 @@ Return exactly this JSON structure:
   "man_hour_rate": null,
   "annual_manpower_impact_fte": null,
   "annual_benefit": null,
+  "grand_total": null,
   "key_assumptions": [],
   "source_evidence": []
 }}
@@ -756,6 +816,12 @@ Field guidance:
   cell under it is blank/empty, that means opex is null — do NOT reach into the CAPEX section (or
   anywhere else) for a substitute number just because OPEX itself has none. If no such OPEX
   figure exists, use null.
+- "grand_total": overall project cost including contingency,
+  only if explicitly stated in the document.
+  Prefer values labelled:
+  - Grand Total
+  - Total Budget
+  - Total Cost (including contingency).
 
 Worked example (a cost table where the CAPEX section header exists but every cost cell under
 it is blank, and the OPEX section below it has real figures):
@@ -953,6 +1019,7 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         }
 
     computed_metrics = compute_aor_metrics(extracted_inputs)
+    approval_info = determine_approving_authority(extracted_inputs.get("grand_total"))
     missing_fields = identify_missing_fields(extracted_inputs, computed_metrics)
     submission_complete = len(missing_fields) == 0
 
@@ -1009,6 +1076,7 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
 
     return {
         "status": "ok",
+        "approval_info": approval_info,
         "submission_complete": submission_complete,
         "result": full_result,
         "extracted_inputs": extracted_inputs,
