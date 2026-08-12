@@ -235,22 +235,17 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
     print("NEV SECTION:", sections.get("nev", "MISSING"))
 
     def replace_paragraph_text(paragraph, new_text: str):
-        """
-        Replace paragraph contents while retaining the paragraph formatting.
-        """
-        paragraph_element = paragraph._p
-
-        for child in list(paragraph_element):
+        """Replace paragraph contents while retaining paragraph formatting."""
+        p_elem = paragraph._p
+        for child in list(p_elem):
             if child.tag == qn("w:pPr"):
                 continue
-            paragraph_element.remove(child)
+            p_elem.remove(child)
 
         lines = new_text.splitlines()
-
         for index, line in enumerate(lines):
             if index > 0:
                 paragraph.add_run().add_break()
-
             cleaned_line = re.sub(r"^[-*]\s+", "", line.strip())
             paragraph.add_run(cleaned_line)
 
@@ -273,32 +268,34 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
             return
 
         heading_index = find_heading_index(heading_names)
-
         if heading_index is None:
             return
 
         paragraphs = doc.paragraphs
-        first_content_paragraph = None  # <-- move this OUTSIDE the loop
+        first_content_index = None
 
         for index in range(heading_index + 1, len(paragraphs)):
             paragraph = paragraphs[index]
             paragraph_text = paragraph.text.strip()
-
-            if not paragraph_text:
-                continue
-
             normalised = normalise_heading(paragraph_text)
 
-            if normalised in SECTION_ALIASES:
-                return
+            # Stop if we've hit the next section heading
+            if paragraph_text and normalised in SECTION_ALIASES:
+                break
 
-            if first_content_paragraph is None:
-                first_content_paragraph = paragraph
+            if paragraph_text and first_content_index is None:
+                first_content_index = index
                 replace_paragraph_text(paragraph, new_text)
-            else:
-                paragraph.text = ""  # clear subsequent paragraphs in the section"
+            elif first_content_index is not None and paragraph_text:
+                # Clear text but preserve the paragraph element to avoid
+                # disrupting tables or other content that follows
+                p_elem = paragraph._p
+                for child in list(p_elem):
+                    if child.tag == qn("w:pPr"):
+                        continue
+                    p_elem.remove(child)
 
-    title, sections = parse_aor_sections(result_text)
+        title, sections = parse_aor_sections(result_text)
 
     # Replace the template title.
     if title:
