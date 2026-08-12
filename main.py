@@ -249,6 +249,9 @@ def build_result_docx(result_text: str) -> bytes:
 
             if normalised in SECTION_ALIASES:
                 return
+            
+            first_content_paragraph = None
+            
 
             if first_content_paragraph is None:
                 first_content_paragraph = paragraph
