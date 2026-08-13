@@ -183,11 +183,6 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
                 for cell in table.rows[0].cells
             )
             print(f"DEBUG table {i} header: {header_text}")
-            for j, row in enumerate(table.rows):
-                print(f"DEBUG table {i} row {j}: {[cell.text.strip() for cell in row.cells]}")
-
-            if "description" not in header_text and "cost" not in header_text:
-                continue
 
             for row in table.rows:
                 first_cell = row.cells[0].text.strip().lower()
