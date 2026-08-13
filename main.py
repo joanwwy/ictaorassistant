@@ -183,9 +183,9 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
                 for cell in table.rows[0].cells
             )
             print(f"DEBUG table {i} header: {header_text}")
-
+            
             for row in table.rows:
-                first_cell = row.cells[0].text.strip().lower()
+                first_cell = row.cells[0].text.strip().lower().rstrip(":")
                 last_cell_index = len(row.cells) - 1
 
                 if "total capex" in first_cell:
