@@ -183,20 +183,26 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
                 for cell in table.rows[0].cells
             )
             print(f"DEBUG table {i} header: {header_text}")
-            
+
             for row in table.rows:
-                first_cell = row.cells[0].text.strip().lower().rstrip(":")
-                last_cell_index = len(row.cells) - 1
+            first_cell = row.cells[0].text.strip().lower().rstrip(":")
+            last_cell_index = len(row.cells) - 1
 
-                if "total capex" in first_cell:
-                    row.cells[last_cell_index].text = fmt(capex_total)
-                elif "total opex" in first_cell:
-                    row.cells[last_cell_index].text = fmt(opex_total)
-                elif "total cost" in first_cell:
-                    row.cells[last_cell_index].text = fmt(total_cost)
-                elif "grand total" in first_cell:
-                    row.cells[last_cell_index].text = fmt(grand_total)
+            print(f"DEBUG row first_cell: '{first_cell}', last_cell_index: {last_cell_index}")
 
+            if "total capex" in first_cell:
+                print("DEBUG matched total capex, writing:", fmt(capex_total))
+                row.cells[last_cell_index].text = fmt(capex_total)
+            elif "total opex" in first_cell:
+                print("DEBUG matched total opex, writing:", fmt(opex_total))
+                row.cells[last_cell_index].text = fmt(opex_total)
+            elif "total cost" in first_cell:
+                print("DEBUG matched total cost, writing:", fmt(total_cost))
+                row.cells[last_cell_index].text = fmt(total_cost)
+            elif "grand total" in first_cell:
+                print("DEBUG matched grand total, writing:", fmt(grand_total))
+                row.cells[last_cell_index].text = fmt(grand_total)
+                
     def parse_aor_sections(text: str):
         sections = {}
         title_lines = []
