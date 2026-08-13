@@ -129,6 +129,39 @@ def _strip_dangling_relationships(contents: bytes) -> bytes:
 
     return buffer.getvalue()
 
+def strip_cost_breakdown_narrative(text: str) -> str:
+    """Drop CAPEX/OPEX narrative lines that duplicate the cost breakdown
+    table (section labels, itemised line items, Sub Total/Contingency/
+    Grand Total figures). The table is populated separately from
+    capex_items/opex_items, so repeating them as text — whether in the
+    docx "Estimated Costs" paragraph or the chat/preview response — is
+    redundant, and the LLM's own arithmetic for these figures (e.g. Sub
+    Total + 5% contingency) is not reliably correct.
+    """
+    label_line = re.compile(r"^\*{0,2}(capex|opex)\*{0,2}\s*:?\*{0,2}$", re.IGNORECASE)
+    item_line = re.compile(r"^\d+\.\s.*\$[\d,]+(\.\d+)?\s*$")
+    total_line = re.compile(
+        r"^(sub\s*total|contingency\b.*|grand\s*total)\s*:?.*\$[\d,]+(\.\d+)?\s*$",
+        re.IGNORECASE,
+    )
+    # Some drafts render the cost breakdown as a markdown table (e.g.
+    # "| Description | Estimated Cost ($) |") instead of the plain-text
+    # forms above — that duplicates the real docx table just as much.
+    markdown_table_line = re.compile(r"^\|.*\|\s*$")
+    markdown_table_separator = re.compile(r"^\|?[\s:|-]+\|[\s:|-]*\|?$")
+
+    kept_lines = [
+        line for line in text.splitlines()
+        if not (
+            label_line.match(line.strip())
+            or item_line.match(line.strip())
+            or total_line.match(line.strip())
+            or markdown_table_line.match(line.strip())
+            or markdown_table_separator.match(line.strip())
+        )
+    ]
+    return "\n".join(kept_lines)
+
 def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = None) -> bytes:
     """
     Populate the existing AOR template sections using the drafted AOR text.
@@ -200,8 +233,9 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
             else metrics.get("total_cost", "")
         )
         grand_total = inputs.get("grand_total", "")
+        opex_grand_total = inputs.get("opex_grand_total", "")
 
-        print("DEBUG values:", capex_total, opex_total, grand_total, total_cost)
+        print("DEBUG values:", capex_total, opex_total, grand_total, opex_grand_total, total_cost)
 
         def set_cell_text(cell, text):
             for para in cell.paragraphs:
@@ -242,6 +276,13 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
 
             current_section = None
             item_index = 0
+            # Tracks which total row was matched most recently, so a "Grand
+            # Total" row can tell whether it's the OPEX-specific grand total
+            # (immediately follows "Total OPEX" with 5% contingency of its
+            # own, e.g. the detail table's trailing row) or the overall/
+            # CAPEX-based grand total (follows "Total Cost (CAPEX+OPEX)",
+            # e.g. the summary table's row) — the template has one of each.
+            last_total_kind = None
 
             for row in table.rows:
                 first_cell = row.cells[0].text.strip().lower().rstrip(":")
@@ -257,15 +298,20 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
                 if "total capex" in first_cell:
                     print("DEBUG matched total capex, writing:", fmt(capex_total))
                     set_cell_text(row.cells[total_col], fmt(capex_total))
+                    last_total_kind = "capex"
                 elif "total opex" in first_cell:
                     print("DEBUG matched total opex, writing:", fmt(opex_total))
                     set_cell_text(row.cells[total_col], fmt(opex_total))
+                    last_total_kind = "opex"
                 elif "total cost" in first_cell:
                     print("DEBUG matched total cost, writing:", fmt(total_cost))
                     set_cell_text(row.cells[total_col], fmt(total_cost))
+                    last_total_kind = "cost"
                 elif "grand total" in first_cell:
-                    print("DEBUG matched grand total, writing:", fmt(grand_total))
-                    set_cell_text(row.cells[total_col], fmt(grand_total))
+                    value = opex_grand_total if last_total_kind == "opex" else grand_total
+                    print("DEBUG matched grand total, writing:", fmt(value))
+                    set_cell_text(row.cells[total_col], fmt(value))
+                    last_total_kind = "grand"
                 elif "capex" in first_cell:
                     current_section = "capex"
                     item_index = 0
@@ -287,37 +333,6 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
                     item_index += 1
 
         return total_cost
-
-    def strip_cost_breakdown_narrative(text: str) -> str:
-        """Drop CAPEX/OPEX narrative lines that duplicate the cost breakdown
-        table (section labels, itemised line items, Sub Total/Contingency/
-        Grand Total figures). The table is populated separately from
-        capex_items/opex_items, so repeating them as text in the "Estimated
-        Costs" paragraph is redundant.
-        """
-        label_line = re.compile(r"^\*{0,2}(capex|opex)\*{0,2}\s*:?\*{0,2}$", re.IGNORECASE)
-        item_line = re.compile(r"^\d+\.\s.*\$[\d,]+(\.\d+)?\s*$")
-        total_line = re.compile(
-            r"^(sub\s*total|contingency\b.*|grand\s*total)\s*:?.*\$[\d,]+(\.\d+)?\s*$",
-            re.IGNORECASE,
-        )
-        # Some drafts render the cost breakdown as a markdown table (e.g.
-        # "| Description | Estimated Cost ($) |") instead of the plain-text
-        # forms above — that duplicates the real docx table just as much.
-        markdown_table_line = re.compile(r"^\|.*\|\s*$")
-        markdown_table_separator = re.compile(r"^\|?[\s:|-]+\|[\s:|-]*\|?$")
-
-        kept_lines = [
-            line for line in text.splitlines()
-            if not (
-                label_line.match(line.strip())
-                or item_line.match(line.strip())
-                or total_line.match(line.strip())
-                or markdown_table_line.match(line.strip())
-                or markdown_table_separator.match(line.strip())
-            )
-        ]
-        return "\n".join(kept_lines)
 
     def parse_aor_sections(text: str):
         sections = {}
@@ -950,7 +965,8 @@ def clean_extracted_inputs(inputs: dict):
         "num_staff",
         "savings_duration_months",
         "man_hour_rate",
-        "grand_total"
+        "grand_total",
+        "opex_grand_total"
     ]
     cleaned = dict(inputs)
     for field in numeric_fields:
@@ -1637,6 +1653,7 @@ Return exactly this JSON structure:
   "annual_manpower_impact_fte": null,
   "annual_benefit": null,
   "grand_total": null,
+  "opex_grand_total": null,
   "capex_items": [],
   "opex_items": [],
   "key_assumptions": [],
@@ -1705,12 +1722,20 @@ satisfy the "purpose" field.
   cell under it is blank/empty, that means opex is null — do NOT reach into the CAPEX section (or
   anywhere else) for a substitute number just because OPEX itself has none. If no such OPEX
   figure exists, use null.
-- "grand_total": overall project cost including contingency,
-  only if explicitly stated in the document.
-  Prefer values labelled:
-  - Grand Total
+- "grand_total": the CAPEX section's own Sub Total plus its contingency, only if explicitly stated
+  in the document. Prefer values labelled:
+  - Grand Total (within/immediately below the CAPEX table)
   - Total Budget
   - Total Cost (including contingency).
+  Extract the precise stated figure (e.g. "$876,750"), NOT a rounded administrative "Say" amount
+  (e.g. "Say $877,000") — if the document states both a precise total and a "Say"-rounded
+  convenience figure for the same total, use the precise one.
+- "opex_grand_total": the OPEX section's own Sub Total plus its contingency (contingency for OPEX
+  is computed separately from CAPEX's), only if explicitly stated in the document. Same rules as
+  "grand_total" (prefer the value labelled Grand Total within/immediately below the OPEX table,
+  and extract the precise figure rather than a rounded "Say" amount). If the document only states
+  one combined grand total covering both CAPEX and OPEX together, that combined figure belongs to
+  "grand_total", not here — use null for "opex_grand_total" instead of splitting a combined figure.
 - "capex_items": an array of the individual CAPEX line items found in a CAPEX-labelled cost
   table/section, each as {{"description": <item description>, "amount": <numeric cost for that
   line item>}}. Only include line items that have their own description (e.g. "Provision of
@@ -2054,7 +2079,7 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         HumanMessage(content="Draft the AOR.")
     ])
 
-    full_result = final_response.content.rstrip()
+    full_result = strip_cost_breakdown_narrative(final_response.content.rstrip())
     if missing_fields:
         full_result += "\n\n" + build_missing_information_section(missing_fields)
 
