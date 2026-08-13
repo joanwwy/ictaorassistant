@@ -177,6 +177,15 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
             except (ValueError, TypeError):
                 return str(val)
 
+        def set_cell_text(cell, text):
+            for para in cell.paragraphs:
+                for run in para.runs:
+                    run.text = ""
+            if cell.paragraphs[0].runs:
+                cell.paragraphs[0].runs[0].text = text
+            else:
+                cell.paragraphs[0].add_run(text)
+
         for i, table in enumerate(doc.tables):
             header_text = " ".join(
                 cell.text.strip().lower()
@@ -192,16 +201,16 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
 
                 if "total capex" in first_cell:
                     print("DEBUG matched total capex, writing:", fmt(capex_total))
-                    row.cells[last_cell_index].text = fmt(capex_total)
+                    set_cell_text(row.cells[last_cell_index], fmt(capex_total))
                 elif "total opex" in first_cell:
                     print("DEBUG matched total opex, writing:", fmt(opex_total))
-                    row.cells[last_cell_index].text = fmt(opex_total)
+                    set_cell_text(row.cells[last_cell_index], fmt(opex_total))
                 elif "total cost" in first_cell:
                     print("DEBUG matched total cost, writing:", fmt(total_cost))
-                    row.cells[last_cell_index].text = fmt(total_cost)
+                    set_cell_text(row.cells[last_cell_index], fmt(total_cost))
                 elif "grand total" in first_cell:
                     print("DEBUG matched grand total, writing:", fmt(grand_total))
-                    row.cells[last_cell_index].text = fmt(grand_total)
+                    set_cell_text(row.cells[last_cell_index], fmt(grand_total))
                     
     def parse_aor_sections(text: str):
         sections = {}
