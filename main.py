@@ -284,7 +284,6 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
             paragraph_text = paragraph.text.strip()
             normalised = normalise_heading(paragraph_text)
 
-            # Stop if we've hit the next section heading
             if paragraph_text and normalised in SECTION_ALIASES:
                 break
 
@@ -293,13 +292,14 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
                 replace_paragraph_text(paragraph, new_text)
             elif first_content_index is not None and paragraph_text:
                 paragraphs_to_remove.append(paragraph)
-                # Clear text but preserve the paragraph element to avoid
-                # disrupting tables or other content that follows
-            for paragraph in paragraphs_to_remove:
-                p_elem = paragraph._p
-                p_elem.getparent().remove(p_elem)    
 
-        title, sections = parse_aor_sections(result_text)
+        # Now outside the for loop — runs once after scanning is complete
+        for paragraph in paragraphs_to_remove:
+            p_elem = paragraph._p
+            p_elem.getparent().remove(p_elem)
+
+    # Outside replace_section_body entirely
+    title, sections = parse_aor_sections(result_text)
 
     # Replace the template title.
     if title:
