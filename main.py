@@ -159,10 +159,15 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
         return re.sub(r"\s+", " ", text).strip().lower()
 
     def populate_budget_table(inputs: dict, metrics: dict):
+        print("DEBUG inputs:", inputs)
+        print("DEBUG metrics:", metrics)
+
         capex_total = inputs.get("capex", "")
         opex_total = inputs.get("opex", "")
         grand_total = inputs.get("grand_total", "")
         total_cost = metrics.get("total_cost", "")
+
+        print("DEBUG values:", capex_total, opex_total, grand_total, total_cost)
 
         def fmt(val):
             if val == "" or val is None:
@@ -172,11 +177,15 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
             except (ValueError, TypeError):
                 return str(val)
 
-        for table in doc.tables:
+        for i, table in enumerate(doc.tables):
             header_text = " ".join(
                 cell.text.strip().lower()
                 for cell in table.rows[0].cells
             )
+            print(f"DEBUG table {i} header: {header_text}")
+            for j, row in enumerate(table.rows):
+                print(f"DEBUG table {i} row {j}: {[cell.text.strip() for cell in row.cells]}")
+
             if "description" not in header_text and "cost" not in header_text:
                 continue
 
