@@ -162,6 +162,23 @@ def strip_cost_breakdown_narrative(text: str) -> str:
     ]
     return "\n".join(kept_lines)
 
+def strip_nev_metrics_narrative(text: str) -> str:
+    """Drop the individual NEV metric lines (Present Value of Benefits/Costs,
+    Net Present Value, Benefit-Cost Ratio, Annual Manpower Impact, Annual
+    Benefit) that duplicate the deterministic NEV table. Keeps only the
+    LLM's qualitative assessment sentence(s).
+    """
+    metric_line = re.compile(
+        r"^\*{0,2}-?\s*(present value of benefits|present value of costs|net present value|"
+        r"benefit-cost ratio|annual manpower impact|annual benefit)\s*:.*$",
+        re.IGNORECASE,
+    )
+    kept_lines = [
+        line for line in text.splitlines()
+        if not metric_line.match(line.strip())
+    ]
+    return "\n".join(kept_lines)
+
 def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = None) -> bytes:
     """
     Populate the existing AOR template sections using the drafted AOR text.
@@ -187,10 +204,42 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
     }
 
     def normalise_heading(text: str) -> str:
-        text = re.sub(r"^\d+[\.\s]+", "", text.strip())
+        text = text.strip()
+        # The drafting LLM sometimes formats headings as markdown (e.g.
+        # "## Purpose") even though the template's own headings are plain
+        # text — strip that prefix first so heading detection isn't
+        # silently defeated by markdown formatting.
+        text = re.sub(r"^#{1,6}\s*", "", text)
+        text = re.sub(r"^\d+[\.\s]+", "", text)
         text = text.replace("**", "")
         text = text.rstrip(":")
         return re.sub(r"\s+", " ", text).strip().lower()
+
+    # All headings that can appear in the template — used to recognise where
+    # one section ends and the next begins when replacing a section's body.
+    # SECTION_ALIASES alone isn't enough: it models how the *drafting LLM*
+    # phrases headings (e.g. "Need for Deployment"), but the template's own
+    # placeholder headings (e.g. "Need for <xx>") don't always match that
+    # phrasing, so scanning would otherwise run past them, swallow the next
+    # heading as if it were body content, and delete it.
+    ALL_HEADING_NAMES = {
+        normalise_heading(name) for name in [
+            "Purpose",
+            "Background",
+            "Need for <xx>",
+            "Need For Deployment",
+            "Need for Deployment of the Sample System",
+            "Scope of Work",
+            "Proposed Budget",
+            "Estimated Costs",
+            "Net Economic Value (NEV) Analysis and Manpower Capitalisation",
+            "Net Economic Value Analysis and Manpower Capitalisation",
+            "Availability of Funds",
+            "Funding",
+            "Approving Authority",
+            "Approval",
+        ]
+    } | set(SECTION_ALIASES.keys())
 
     def fmt(val):
         if val == "" or val is None:
@@ -369,6 +418,7 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
         save_current_section()
 
         title = title_lines[0] if title_lines else ""
+        title = re.sub(r"^#{1,6}\s*", "", title.strip())
         title = title.replace("**", "").strip()
 
         return title, sections
@@ -430,7 +480,7 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
             paragraph_text = paragraph.text.strip()
             normalised = normalise_heading(paragraph_text)
 
-            if paragraph_text and normalised in SECTION_ALIASES:
+            if paragraph_text and normalised in ALL_HEADING_NAMES:
                 break
 
             # If stop_before_table is set, check if the next sibling
@@ -499,13 +549,73 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
         stop_before_table=True
     )
 
-    replace_section_body(
-        [
-            "Net Economic Value (NEV) Analysis and Manpower Capitalisation",
-            "Net Economic Value Analysis and Manpower Capitalisation"
-        ],
-        sections.get("nev", "")
-    )
+    # The template has no "Net Economic Value" heading of its own to reuse
+    # (unlike the other sections above), so it's built from scratch here —
+    # a heading, the LLM's short qualitative assessment sentence, and a
+    # table of the computed metrics — and inserted right before the
+    # "Availability of Funds" heading (the section that logically follows
+    # the budget in document order).
+    if metrics:
+        nev_anchor_index = find_heading_index(["Availability of Funds", "Funding"])
+        if nev_anchor_index is not None:
+            nev_anchor = doc.paragraphs[nev_anchor_index]
+
+            def insert_before(text: str, bold: bool = False, size: int = 12):
+                new_paragraph = nev_anchor.insert_paragraph_before(text)
+                for run in new_paragraph.runs:
+                    run.bold = bold
+                    run.font.name = "Arial"
+                    run.font.size = Pt(size)
+                return new_paragraph
+
+            insert_before(
+                "Net Economic Value (NEV) Analysis and Manpower Capitalisation",
+                bold=True,
+                size=14
+            )
+            insert_before("")
+
+            nev_intro = strip_nev_metrics_narrative(sections.get("nev", "")).strip()
+            if nev_intro:
+                insert_before(nev_intro)
+                insert_before("")
+
+            def fmt_ratio(val, suffix: str = ""):
+                if val is None:
+                    return "Not available – required information not found"
+                try:
+                    return f"{float(val):,.4f}{suffix}"
+                except (ValueError, TypeError):
+                    return str(val)
+
+            def fmt_or_na(val):
+                return fmt(val) or "Not available – required information not found"
+
+            nev_rows = [
+                ("Present Value of Benefits", fmt_or_na(metrics.get("total_benefits_pv"))),
+                ("Present Value of Costs", fmt_or_na(metrics.get("total_costs_pv"))),
+                ("Net Present Value", fmt_or_na(metrics.get("net_present_value"))),
+                ("Benefit-Cost Ratio", fmt_ratio(metrics.get("benefit_cost_ratio"))),
+                ("Annual Manpower Impact (FTE)", fmt_ratio(metrics.get("annual_manpower_impact_fte"), " FTE")),
+                ("Annual Benefit", fmt_or_na(metrics.get("annual_benefit"))),
+            ]
+
+            nev_table = doc.add_table(rows=len(nev_rows) + 1, cols=2)
+            nev_table.style = "Table Grid"
+            nev_table.rows[0].cells[0].text = "Metric"
+            nev_table.rows[0].cells[1].text = "Value"
+            for row, (label, value) in zip(nev_table.rows[1:], nev_rows):
+                row.cells[0].text = label
+                row.cells[1].text = value
+            for row in nev_table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        for run in para.runs:
+                            run.font.name = "Arial"
+                            run.font.size = Pt(12)
+
+            nev_anchor._p.addprevious(nev_table._tbl)
+            insert_before("")
 
     replace_section_body(
         ["Availability of Funds", "Funding"],
@@ -1942,15 +2052,14 @@ Rules:
 - Do not create Annexes.
 - Do not invent figures.
 - Return only the AOR text.
-- In the Net Economic Value section, state the following computed values exactly:
-  - Present Value of Benefits: use total_benefits_pv
-  - Present Value of Costs: use total_costs_pv
-  - Net Present Value: use net_present_value
-  - Benefit-Cost Ratio: use benefit_cost_ratio
-  - Annual Manpower Impact: use annual_manpower_impact_fte
-  - Annual Benefit: use annual_benefit
-- Do not recompute or alter the computed values.
-- If a computed value is null, state that it could not be calculated because the required information was not found.
+- In the Net Economic Value section, write only a short assessment sentence stating whether the
+  project has a positive or negative Net Economic Value (NEV), based on net_present_value (a
+  positive net_present_value means a positive NEV). Do NOT list "Present Value of Benefits:",
+  "Present Value of Costs:", "Net Present Value:", "Benefit-Cost Ratio:", "Annual Manpower
+  Impact:", or "Annual Benefit:" as text — those computed values are already rendered in the
+  accompanying NEV table, so repeating them in the narrative is redundant. If net_present_value
+  is null, state that the NEV assessment could not be made because the required information was
+  not found.
 - In the Estimated Costs section, write only a short introductory sentence stating that the
   estimated costs for the project are set out in the table below (e.g. "The estimated costs for
   the project are as follows:"). Do NOT list "CAPEX:"/"OPEX:" labels, individual line items, Sub
@@ -2079,7 +2188,9 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         HumanMessage(content="Draft the AOR.")
     ])
 
-    full_result = strip_cost_breakdown_narrative(final_response.content.rstrip())
+    full_result = strip_nev_metrics_narrative(
+        strip_cost_breakdown_narrative(final_response.content.rstrip())
+    )
     if missing_fields:
         full_result += "\n\n" + build_missing_information_section(missing_fields)
 
