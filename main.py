@@ -162,6 +162,165 @@ def strip_cost_breakdown_narrative(text: str) -> str:
     ]
     return "\n".join(kept_lines)
 
+def compute_cost_totals(inputs: dict, metrics: dict) -> dict:
+    """Single source of truth for CAPEX/OPEX totals, shared by the docx cost
+    table and the chat/preview narrative so the two never disagree.
+    """
+    capex_items = inputs.get("capex_items") or []
+    opex_items = inputs.get("opex_items") or []
+
+    def sum_items(items):
+        amounts = [
+            item.get("amount") for item in items
+            if isinstance(item.get("amount"), (int, float))
+        ]
+        return sum(amounts) if amounts else None
+
+    # Total CAPEX/OPEX must equal the sum of the itemised rows — using the
+    # separately-extracted top-level capex/opex figure instead (which may
+    # already include contingency, e.g. a source Grand Total) would make the
+    # total not add up to its own line items. Only fall back to that figure
+    # when no items were itemised.
+    capex_from_items = sum_items(capex_items)
+    opex_from_items = sum_items(opex_items)
+    capex_total = capex_from_items if capex_from_items is not None else inputs.get("capex")
+    opex_total = opex_from_items if opex_from_items is not None else inputs.get("opex")
+
+    total_cost = (
+        capex_total + opex_total
+        if isinstance(capex_total, (int, float)) and isinstance(opex_total, (int, float))
+        else (metrics or {}).get("total_cost")
+    )
+
+    # Grand Total is always computed as Sub Total + 5% contingency, never
+    # extracted from the document — extraction proved unreliable (it could
+    # pick up a rounded administrative "Say" figure, or an unrelated number
+    # entirely), whereas the 5% rate is fixed by the template's own heading
+    # ("Grand Total (With 5% contingency)"), so computing it is both simpler
+    # and guaranteed correct.
+    grand_total = capex_total * 1.05 if isinstance(capex_total, (int, float)) else None
+    opex_grand_total = opex_total * 1.05 if isinstance(opex_total, (int, float)) else None
+
+    return {
+        "capex_items": capex_items,
+        "opex_items": opex_items,
+        "capex_total": capex_total,
+        "opex_total": opex_total,
+        "total_cost": total_cost,
+        "grand_total": grand_total,
+        "opex_grand_total": opex_grand_total,
+    }
+
+def build_cost_breakdown_bullets(inputs: dict, metrics: dict) -> str:
+    """Deterministic bullet-point cost breakdown for the chat/preview
+    response, built from the same totals as the docx cost table (via
+    compute_cost_totals) so the two always agree — the LLM only ever
+    writes the short intro sentence, never the figures themselves.
+    """
+    totals = compute_cost_totals(inputs, metrics or {})
+
+    def money(val):
+        if val is None:
+            return "Not available"
+        try:
+            return f"${float(val):,.0f}"
+        except (ValueError, TypeError):
+            return str(val)
+
+    lines = []
+    if totals["capex_items"]:
+        lines.append("CAPEX")
+        for item in totals["capex_items"]:
+            lines.append(f"- {item.get('description', '')}: {money(item.get('amount'))}")
+    lines.append(f"- Total CAPEX: {money(totals['capex_total'])}")
+    if totals["grand_total"] is not None:
+        lines.append(f"- Grand Total (CAPEX, with 5% contingency): {money(totals['grand_total'])}")
+
+    if totals["opex_items"]:
+        lines.append("")
+        lines.append("OPEX")
+        for item in totals["opex_items"]:
+            lines.append(f"- {item.get('description', '')}: {money(item.get('amount'))}")
+    lines.append(f"- Total OPEX: {money(totals['opex_total'])}")
+    if totals["opex_grand_total"] is not None:
+        lines.append(f"- Grand Total (OPEX, with 5% contingency): {money(totals['opex_grand_total'])}")
+
+    lines.append(f"- Total Cost (CAPEX + OPEX): {money(totals['total_cost'])}")
+    return "\n".join(lines)
+
+def build_nev_bullets(metrics: dict) -> str:
+    """Deterministic bullet-point NEV breakdown for the chat/preview
+    response, built from the same computed_metrics as the docx NEV table —
+    the LLM only ever writes the short qualitative sentence, never the
+    figures themselves.
+    """
+    metrics = metrics or {}
+
+    def money(val):
+        if val is None:
+            return "Not available – required information not found"
+        try:
+            return f"${float(val):,.2f}"
+        except (ValueError, TypeError):
+            return str(val)
+
+    def ratio(val, suffix: str = ""):
+        if val is None:
+            return "Not available – required information not found"
+        try:
+            return f"{float(val):,.4f}{suffix}"
+        except (ValueError, TypeError):
+            return str(val)
+
+    return "\n".join([
+        f"- Present Value of Benefits: {money(metrics.get('total_benefits_pv'))}",
+        f"- Present Value of Costs: {money(metrics.get('total_costs_pv'))}",
+        f"- Net Present Value: {money(metrics.get('net_present_value'))}",
+        f"- Benefit-Cost Ratio: {ratio(metrics.get('benefit_cost_ratio'))}",
+        f"- Annual Manpower Impact: {ratio(metrics.get('annual_manpower_impact_fte'), ' FTE')}",
+        f"- Annual Benefit: {money(metrics.get('annual_benefit'))}",
+    ])
+
+def insert_deterministic_breakdown(text: str, heading_names: list, breakdown_text: str) -> str:
+    """Insert deterministic bullet text right after a section's intro
+    sentence (the first non-empty line following one of heading_names), so
+    the chat/preview response shows the same figures as the docx tables
+    instead of relying on the LLM to restate them.
+    """
+    if not breakdown_text:
+        return text
+
+    targets = {
+        re.sub(r"\s+", " ", name.strip().lower()).rstrip(":")
+        for name in heading_names
+    }
+
+    lines = text.splitlines()
+    result_lines = []
+    i = 0
+    inserted = False
+    while i < len(lines):
+        line = lines[i]
+        result_lines.append(line)
+        if not inserted:
+            candidate = re.sub(r"^#{1,6}\s*", "", line.strip())
+            candidate = re.sub(r"\s+", " ", candidate.replace("*", "")).rstrip(":").lower()
+            if candidate in targets:
+                i += 1
+                while i < len(lines) and not lines[i].strip():
+                    result_lines.append(lines[i])
+                    i += 1
+                if i < len(lines):
+                    result_lines.append(lines[i])
+                    i += 1
+                result_lines.append("")
+                result_lines.extend(breakdown_text.splitlines())
+                inserted = True
+                continue
+        i += 1
+
+    return "\n".join(result_lines)
+
 def strip_nev_metrics_narrative(text: str) -> str:
     """Drop the individual NEV metric lines (Present Value of Benefits/Costs,
     Net Present Value, Benefit-Cost Ratio, Annual Manpower Impact, Annual
@@ -253,36 +412,16 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
         print("DEBUG inputs:", inputs)
         print("DEBUG metrics:", metrics)
 
+        totals = compute_cost_totals(inputs, metrics)
         section_items = {
-            "capex": inputs.get("capex_items") or [],
-            "opex": inputs.get("opex_items") or [],
+            "capex": totals["capex_items"],
+            "opex": totals["opex_items"],
         }
-
-        def sum_items(items):
-            amounts = [
-                item.get("amount") for item in items
-                if isinstance(item.get("amount"), (int, float))
-            ]
-            return sum(amounts) if amounts else None
-
-        # Total CAPEX/OPEX must equal the sum of the itemised rows shown
-        # directly above them in the table — using the separately-extracted
-        # top-level capex/opex figure instead (which may already include
-        # contingency, e.g. a source Grand Total) would make the total not
-        # add up to its own line items. Only fall back to that figure when
-        # no items were itemised.
-        capex_from_items = sum_items(section_items["capex"])
-        opex_from_items = sum_items(section_items["opex"])
-        capex_total = capex_from_items if capex_from_items is not None else inputs.get("capex", "")
-        opex_total = opex_from_items if opex_from_items is not None else inputs.get("opex", "")
-
-        total_cost = (
-            capex_total + opex_total
-            if isinstance(capex_total, (int, float)) and isinstance(opex_total, (int, float))
-            else metrics.get("total_cost", "")
-        )
-        grand_total = inputs.get("grand_total", "")
-        opex_grand_total = inputs.get("opex_grand_total", "")
+        capex_total = totals["capex_total"]
+        opex_total = totals["opex_total"]
+        total_cost = totals["total_cost"]
+        grand_total = totals["grand_total"]
+        opex_grand_total = totals["opex_grand_total"]
 
         print("DEBUG values:", capex_total, opex_total, grand_total, opex_grand_total, total_cost)
 
@@ -483,21 +622,27 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
             if paragraph_text and normalised in ALL_HEADING_NAMES:
                 break
 
-            # If stop_before_table is set, check if the next sibling
-            # element in the document body is a table, and stop if so
+            # If stop_before_table is set, the paragraph immediately before
+            # the table ends the scan — but it's still just another content
+            # paragraph for replace/remove purposes below (e.g. a template
+            # placeholder like "[Insert cost breakdown table here]" sitting
+            # between the intro sentence and the table must still be queued
+            # for removal, not left in place just because it's adjacent to
+            # the table).
+            is_before_table = False
             if stop_before_table:
                 p_elem = paragraph._p
                 next_sibling = p_elem.getnext()
-                if next_sibling is not None and next_sibling.tag == qn("w:tbl"):
-                    if first_content_index is None:
-                        replace_paragraph_text(paragraph, new_text)
-                    break
+                is_before_table = next_sibling is not None and next_sibling.tag == qn("w:tbl")
 
             if paragraph_text and first_content_index is None:
                 first_content_index = index
                 replace_paragraph_text(paragraph, new_text)
-            elif first_content_index is not None and paragraph_text:
+            elif paragraph_text:
                 paragraphs_to_remove.append(paragraph)
+
+            if is_before_table:
+                break
 
         for paragraph in paragraphs_to_remove:
             p_elem = paragraph._p
@@ -589,7 +734,16 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
                     return str(val)
 
             def fmt_or_na(val):
-                return fmt(val) or "Not available – required information not found"
+                # 2dp (not the 0dp used for CAPEX/OPEX) so this matches the
+                # precision of the deterministic NEV bullets appended to the
+                # chat/preview response — present values legitimately carry
+                # meaningful cents.
+                if val is None:
+                    return "Not available – required information not found"
+                try:
+                    return f"${float(val):,.2f}"
+                except (ValueError, TypeError):
+                    return str(val)
 
             nev_rows = [
                 ("Present Value of Benefits", fmt_or_na(metrics.get("total_benefits_pv"))),
@@ -658,7 +812,9 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
     # "Up to " prefix is dropped for the second placeholder to avoid
     # "up to Up to S$5 million".
     if inputs:
-        approval_info = determine_approving_authority(inputs.get("grand_total"))
+        approval_info = determine_approving_authority(
+            compute_cost_totals(inputs, metrics or {})["grand_total"]
+        )
         if approval_info:
             authority_name, threshold_label = approval_info
             threshold_amount = re.sub(r"^(up to|above)\s+", "", threshold_label, flags=re.IGNORECASE)
@@ -1074,9 +1230,7 @@ def clean_extracted_inputs(inputs: dict):
         "annual_benefit",
         "num_staff",
         "savings_duration_months",
-        "man_hour_rate",
-        "grand_total",
-        "opex_grand_total"
+        "man_hour_rate"
     ]
     cleaned = dict(inputs)
     for field in numeric_fields:
@@ -1762,8 +1916,6 @@ Return exactly this JSON structure:
   "man_hour_rate": null,
   "annual_manpower_impact_fte": null,
   "annual_benefit": null,
-  "grand_total": null,
-  "opex_grand_total": null,
   "capex_items": [],
   "opex_items": [],
   "key_assumptions": [],
@@ -1832,20 +1984,6 @@ satisfy the "purpose" field.
   cell under it is blank/empty, that means opex is null — do NOT reach into the CAPEX section (or
   anywhere else) for a substitute number just because OPEX itself has none. If no such OPEX
   figure exists, use null.
-- "grand_total": the CAPEX section's own Sub Total plus its contingency, only if explicitly stated
-  in the document. Prefer values labelled:
-  - Grand Total (within/immediately below the CAPEX table)
-  - Total Budget
-  - Total Cost (including contingency).
-  Extract the precise stated figure (e.g. "$876,750"), NOT a rounded administrative "Say" amount
-  (e.g. "Say $877,000") — if the document states both a precise total and a "Say"-rounded
-  convenience figure for the same total, use the precise one.
-- "opex_grand_total": the OPEX section's own Sub Total plus its contingency (contingency for OPEX
-  is computed separately from CAPEX's), only if explicitly stated in the document. Same rules as
-  "grand_total" (prefer the value labelled Grand Total within/immediately below the OPEX table,
-  and extract the precise figure rather than a rounded "Say" amount). If the document only states
-  one combined grand total covering both CAPEX and OPEX together, that combined figure belongs to
-  "grand_total", not here — use null for "opex_grand_total" instead of splitting a combined figure.
 - "capex_items": an array of the individual CAPEX line items found in a CAPEX-labelled cost
   table/section, each as {{"description": <item description>, "amount": <numeric cost for that
   line item>}}. Only include line items that have their own description (e.g. "Provision of
@@ -2172,7 +2310,9 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         }
 
     computed_metrics = compute_aor_metrics(extracted_inputs)
-    approval_info = determine_approving_authority(extracted_inputs.get("grand_total"))
+    approval_info = determine_approving_authority(
+        compute_cost_totals(extracted_inputs, computed_metrics)["grand_total"]
+    )
     missing_fields = identify_missing_fields(extracted_inputs, computed_metrics)
     submission_complete = len(missing_fields) == 0
 
@@ -2188,8 +2328,30 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         HumanMessage(content="Draft the AOR.")
     ])
 
-    full_result = strip_nev_metrics_narrative(
+    # docx_source_text stays intro-only for "Estimated Costs"/"NEV" — the
+    # docx gets its figures from the deterministic tables instead (built
+    # from extracted_inputs/computed_metrics, see build_result_docx). The
+    # bullet breakdown below is only for the chat/preview response; it must
+    # NOT also flow into the docx, since its "- label: value" line format
+    # doesn't match strip_cost_breakdown_narrative/strip_nev_metrics_narrative
+    # (which target the LLM's own numbered/"Sub Total:"-style phrasing) and
+    # would otherwise leak into the "Proposed Budget" paragraph as duplicate
+    # text above the real table.
+    docx_source_text = strip_nev_metrics_narrative(
         strip_cost_breakdown_narrative(final_response.content.rstrip())
+    )
+    full_result = insert_deterministic_breakdown(
+        docx_source_text,
+        ["Proposed Budget", "Estimated Costs"],
+        build_cost_breakdown_bullets(extracted_inputs, computed_metrics)
+    )
+    full_result = insert_deterministic_breakdown(
+        full_result,
+        [
+            "Net Economic Value (NEV) Analysis and Manpower Capitalisation",
+            "Net Economic Value Analysis and Manpower Capitalisation"
+        ],
+        build_nev_bullets(computed_metrics)
     )
     if missing_fields:
         full_result += "\n\n" + build_missing_information_section(missing_fields)
@@ -2241,7 +2403,7 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         amended_docx_filename = f"amended-{file.filename}"
     elif not file:
         amended_docx_base64 = base64.b64encode(
-            build_result_docx(full_result, inputs=extracted_inputs, metrics=computed_metrics)
+            build_result_docx(docx_source_text, inputs=extracted_inputs, metrics=computed_metrics)
         ).decode("ascii")
         amended_docx_filename = "aor-assessment.docx"
 
