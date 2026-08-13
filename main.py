@@ -267,7 +267,7 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
 
         return None
 
-    def replace_section_body(heading_names, new_text: str):
+    def replace_section_body(heading_names, new_text: str, stop_before_table: bool = False):
         if not new_text:
             return
 
@@ -287,16 +287,25 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
             if paragraph_text and normalised in SECTION_ALIASES:
                 break
 
+            # If stop_before_table is set, check if the next sibling
+            # element in the document body is a table, and stop if so
+            if stop_before_table:
+                p_elem = paragraph._p
+                next_sibling = p_elem.getnext()
+                if next_sibling is not None and next_sibling.tag == qn("w:tbl"):
+                    if first_content_index is None:
+                        replace_paragraph_text(paragraph, new_text)
+                    break
+
             if paragraph_text and first_content_index is None:
                 first_content_index = index
                 replace_paragraph_text(paragraph, new_text)
             elif first_content_index is not None and paragraph_text:
                 paragraphs_to_remove.append(paragraph)
 
-        # Now outside the for loop — runs once after scanning is complete
         for paragraph in paragraphs_to_remove:
             p_elem = paragraph._p
-            p_elem.getparent().remove(p_elem)
+            p_elem.getparent().remove(p_elem))
 
     # Outside replace_section_body entirely
     title, sections = parse_aor_sections(result_text)
@@ -340,7 +349,8 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
 
     replace_section_body(
         ["Proposed Budget", "Estimated Costs"],
-        sections.get("costs", "")
+        sections.get("costs", ""),
+        stop_before_table=True
     )
 
     replace_section_body(
