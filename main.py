@@ -277,6 +277,7 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
 
         paragraphs = doc.paragraphs
         first_content_index = None
+        paragraphs_to_remove = []
 
         for index in range(heading_index + 1, len(paragraphs)):
             paragraph = paragraphs[index]
@@ -291,13 +292,12 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
                 first_content_index = index
                 replace_paragraph_text(paragraph, new_text)
             elif first_content_index is not None and paragraph_text:
+                paragraphs_to_remove.append(paragraph)
                 # Clear text but preserve the paragraph element to avoid
                 # disrupting tables or other content that follows
+            for paragraph in paragraphs_to_remove:
                 p_elem = paragraph._p
-                for child in list(p_elem):
-                    if child.tag == qn("w:pPr"):
-                        continue
-                    p_elem.remove(child)
+                p_elem.getparent().remove(p_elem)    
 
         title, sections = parse_aor_sections(result_text)
 
