@@ -149,17 +149,31 @@ def strip_cost_breakdown_narrative(text: str) -> str:
     # forms above — that duplicates the real docx table just as much.
     markdown_table_line = re.compile(r"^\|.*\|\s*$")
     markdown_table_separator = re.compile(r"^\|?[\s:|-]+\|[\s:|-]*\|?$")
+    # The LLM's draft sometimes echoes back the template's own bracketed
+    # authoring instruction (e.g. "[Insert cost breakdown table here]")
+    # instead of omitting it — strip that substring out of the line
+    # (keeping any real sentence text around it) rather than requiring
+    # the whole line to be nothing but the placeholder.
+    placeholder_bracket = re.compile(r"\s*\[insert[^\]]*\]", re.IGNORECASE)
 
-    kept_lines = [
-        line for line in text.splitlines()
-        if not (
-            label_line.match(line.strip())
-            or item_line.match(line.strip())
-            or total_line.match(line.strip())
-            or markdown_table_line.match(line.strip())
-            or markdown_table_separator.match(line.strip())
-        )
-    ]
+    kept_lines = []
+    for raw_line in text.splitlines():
+        had_content = bool(raw_line.strip())
+        line = placeholder_bracket.sub("", raw_line).rstrip()
+        stripped = line.strip()
+        if had_content and not stripped:
+            # The whole line was just the placeholder — drop it entirely
+            # rather than keeping an empty line in its place.
+            continue
+        if (
+            label_line.match(stripped)
+            or item_line.match(stripped)
+            or total_line.match(stripped)
+            or markdown_table_line.match(stripped)
+            or markdown_table_separator.match(stripped)
+        ):
+            continue
+        kept_lines.append(line)
     return "\n".join(kept_lines)
 
 def compute_cost_totals(inputs: dict, metrics: dict) -> dict:
@@ -197,9 +211,10 @@ def compute_cost_totals(inputs: dict, metrics: dict) -> dict:
     # pick up a rounded administrative "Say" figure, or an unrelated number
     # entirely), whereas the 5% rate is fixed by the template's own heading
     # ("Grand Total (With 5% contingency)"), so computing it is both simpler
-    # and guaranteed correct.
-    grand_total = capex_total * 1.05 if isinstance(capex_total, (int, float)) else None
-    opex_grand_total = opex_total * 1.05 if isinstance(opex_total, (int, float)) else None
+    # and guaranteed correct. "Grand Total" always means the combined
+    # CAPEX+OPEX total with contingency, wherever it appears in the
+    # document — there is no separate OPEX-only grand total.
+    grand_total = total_cost * 1.05 if isinstance(total_cost, (int, float)) else None
 
     return {
         "capex_items": capex_items,
@@ -208,7 +223,6 @@ def compute_cost_totals(inputs: dict, metrics: dict) -> dict:
         "opex_total": opex_total,
         "total_cost": total_cost,
         "grand_total": grand_total,
-        "opex_grand_total": opex_grand_total,
     }
 
 def build_cost_breakdown_bullets(inputs: dict, metrics: dict) -> str:
@@ -233,8 +247,6 @@ def build_cost_breakdown_bullets(inputs: dict, metrics: dict) -> str:
         for item in totals["capex_items"]:
             lines.append(f"- {item.get('description', '')}: {money(item.get('amount'))}")
     lines.append(f"- Total CAPEX: {money(totals['capex_total'])}")
-    if totals["grand_total"] is not None:
-        lines.append(f"- Grand Total (CAPEX, with 5% contingency): {money(totals['grand_total'])}")
 
     if totals["opex_items"]:
         lines.append("")
@@ -242,10 +254,10 @@ def build_cost_breakdown_bullets(inputs: dict, metrics: dict) -> str:
         for item in totals["opex_items"]:
             lines.append(f"- {item.get('description', '')}: {money(item.get('amount'))}")
     lines.append(f"- Total OPEX: {money(totals['opex_total'])}")
-    if totals["opex_grand_total"] is not None:
-        lines.append(f"- Grand Total (OPEX, with 5% contingency): {money(totals['opex_grand_total'])}")
 
     lines.append(f"- Total Cost (CAPEX + OPEX): {money(totals['total_cost'])}")
+    if totals["grand_total"] is not None:
+        lines.append(f"- Grand Total (With 5% contingency): {money(totals['grand_total'])}")
     return "\n".join(lines)
 
 def build_nev_bullets(metrics: dict) -> str:
@@ -421,18 +433,20 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
         opex_total = totals["opex_total"]
         total_cost = totals["total_cost"]
         grand_total = totals["grand_total"]
-        opex_grand_total = totals["opex_grand_total"]
 
-        print("DEBUG values:", capex_total, opex_total, grand_total, opex_grand_total, total_cost)
+        print("DEBUG values:", capex_total, opex_total, grand_total, total_cost)
 
         def set_cell_text(cell, text):
             for para in cell.paragraphs:
                 for run in para.runs:
                     run.text = ""
             if cell.paragraphs[0].runs:
-                cell.paragraphs[0].runs[0].text = text
+                run = cell.paragraphs[0].runs[0]
+                run.text = text
             else:
-                cell.paragraphs[0].add_run(text)
+                run = cell.paragraphs[0].add_run(text)
+            run.font.name = "Arial"
+            run.font.size = Pt(12)
 
         desc_col = None
         cost_col = None
@@ -464,13 +478,6 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
 
             current_section = None
             item_index = 0
-            # Tracks which total row was matched most recently, so a "Grand
-            # Total" row can tell whether it's the OPEX-specific grand total
-            # (immediately follows "Total OPEX" with 5% contingency of its
-            # own, e.g. the detail table's trailing row) or the overall/
-            # CAPEX-based grand total (follows "Total Cost (CAPEX+OPEX)",
-            # e.g. the summary table's row) — the template has one of each.
-            last_total_kind = None
 
             for row in table.rows:
                 first_cell = row.cells[0].text.strip().lower().rstrip(":")
@@ -486,20 +493,15 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
                 if "total capex" in first_cell:
                     print("DEBUG matched total capex, writing:", fmt(capex_total))
                     set_cell_text(row.cells[total_col], fmt(capex_total))
-                    last_total_kind = "capex"
                 elif "total opex" in first_cell:
                     print("DEBUG matched total opex, writing:", fmt(opex_total))
                     set_cell_text(row.cells[total_col], fmt(opex_total))
-                    last_total_kind = "opex"
                 elif "total cost" in first_cell:
                     print("DEBUG matched total cost, writing:", fmt(total_cost))
                     set_cell_text(row.cells[total_col], fmt(total_cost))
-                    last_total_kind = "cost"
                 elif "grand total" in first_cell:
-                    value = opex_grand_total if last_total_kind == "opex" else grand_total
-                    print("DEBUG matched grand total, writing:", fmt(value))
-                    set_cell_text(row.cells[total_col], fmt(value))
-                    last_total_kind = "grand"
+                    print("DEBUG matched grand total, writing:", fmt(grand_total))
+                    set_cell_text(row.cells[total_col], fmt(grand_total))
                 elif "capex" in first_cell:
                     current_section = "capex"
                     item_index = 0
@@ -682,6 +684,18 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
         ],
         sections.get("need", "")
     )
+
+    # Fill the "<xx>" placeholder in the "Need for <xx>" heading itself
+    # (not just its body, replaced above) with the project title, so it
+    # reads e.g. "Need for Sample Digital Booking System" instead of
+    # leaving the raw template placeholder in the output.
+    if inputs and inputs.get("project_title"):
+        for paragraph in doc.paragraphs:
+            if normalise_heading(paragraph.text) == normalise_heading("Need for <xx>"):
+                for run in paragraph.runs:
+                    if "<xx>" in run.text:
+                        run.text = run.text.replace("<xx>", inputs["project_title"])
+                break
 
     replace_section_body(
         ["Scope of Work"],
@@ -2018,12 +2032,49 @@ section — the CAPEX section has no figures of its own, so capex must be null, 
 that means leaving it blank rather than filling in a plausible-looking nearby number.
 - "project_duration_years": project duration in years as an integer.   If the document states a date range (e.g. FY25 to FY28), count the  number of full operational years, not the number of financial year 
   labels. For example, FY25 to FY27 = 3 years, FY25 to FY28 = 4 years.  Prefer an explicitly stated duration (e.g. "3-year contract") over  a derived date range if both are present..
-- "annual_productivity_time_savings_hours": the RAW total hours figure as stated in the document. Do NOT annualise. Do NOT adjust for number of staff or duration.
-- "num_staff": number of staff whose time savings are being measured (e.g. 2 project officers).
-- "savings_duration_months": duration in months over which the raw hours figure was measured (e.g. 9 months). Extract as a number.
-- "man_hour_rate": the man-hour rate in dollars per hour as explicitly stated in the document (e.g. 98). Do NOT default to any standard rate if not found.
-- "annual_manpower_impact_fte": annual manpower impact in FTE, only if explicitly stated as a final FTE figure in the document.
-- "annual_benefit": annual benefit in dollars, only if explicitly stated as a final dollar benefit figure in the document.
+- "annual_productivity_time_savings_hours": the RAW total hours figure as stated in the
+  document, but ONLY if that figure represents time SAVED or reduced through the new system
+  (a benefit) — e.g. "the system is expected to save 720 hours annually" or a table explicitly
+  labelled as productivity/time savings. Do NOT annualise. Do NOT adjust for number of staff or
+  duration. Do NOT use a figure from a "Manpower Cost Capitalisation" table or any other table
+  whose purpose is to capitalise/cost staff EFFORT SPENT on implementing or operating the
+  project (e.g. "No. of hours", "Manpower Costs Capitalised" columns feeding into a CAPEX/OPEX
+  cost figure) — those hours represent a cost being incurred, not a benefit being gained, even
+  though the raw number and the word "hours" look similar. If the only hours figure in the
+  document is from such a cost-capitalisation table, use null.
+- "num_staff": number of staff whose time SAVINGS are being measured (e.g. 2 project officers
+  freed up by the new system). Subject to the same cost-vs-benefit distinction as
+  "annual_productivity_time_savings_hours" above — do NOT extract this from a manpower cost
+  capitalisation table. If no benefit-context staff count exists, use null.
+- "savings_duration_months": duration in months over which the raw time-savings hours figure was
+  measured (e.g. 9 months), for the same benefit-context figure as
+  "annual_productivity_time_savings_hours". Extract as a number. Do NOT extract this from a
+  manpower cost capitalisation table.
+- "man_hour_rate": the man-hour rate in dollars per hour as explicitly stated in the document
+  (e.g. 98), used to value time savings as a benefit. Do NOT default to any standard rate if not
+  found. A man-hour rate appearing only inside a manpower cost capitalisation table (used to
+  cost staff effort, not value savings) does not satisfy this field — use null unless the same
+  rate is also tied to a benefit/time-savings context.
+- "annual_manpower_impact_fte": annual manpower impact in FTE, only if explicitly stated as a
+  final FTE figure representing manpower freed up / saved (a benefit). Do NOT derive this from a
+  manpower cost capitalisation table's FTE column, which represents staff effort spent, not
+  saved.
+- "annual_benefit": annual benefit in dollars, only if explicitly stated as a final dollar
+  benefit figure in the document.
+
+Worked example (a table that looks like it could feed a productivity-savings calculation, but is
+actually a cost — used to capitalise staff time spent implementing the project):
+
+  S/N | No. of Full-Time Equivalents | No. of hours | FY25 Man-Hour Rate ($) | Manpower Costs Capitalised ($)
+  1   | Two sample project officers  | 720 (based on 50% of working time over 9 months) | 98 | 141,120
+
+This table is titled "Manpower Cost Capitalisation" and its output column is a COST ("Manpower
+Costs Capitalised"), not a benefit. The 720 hours is staff effort spent ON the project, not time
+SAVED by using it. The CORRECT extraction from this table alone is
+"annual_productivity_time_savings_hours": null, "num_staff": null, "savings_duration_months":
+null, and "man_hour_rate": null. It would be WRONG to extract 720, 2, 9, or 98 into these
+benefit-related fields just because the numbers are present and labelled "hours"/"rate" — this
+table has no bearing on productivity time savings.
 - "key_assumptions": assumptions explicitly stated in the document.
 - "source_evidence": short evidence snippets from the context.
 
