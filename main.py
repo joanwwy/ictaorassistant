@@ -27,6 +27,7 @@ from docx.enum.text import WD_COLOR_INDEX
 from docx.oxml import OxmlElement
 from docx.text.paragraph import Paragraph
 from docx.table import Table
+from docx.shared import Pt
 from pathlib import Path
 from docx.oxml.ns import qn
 
@@ -158,24 +159,49 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
         text = text.rstrip(":")
         return re.sub(r"\s+", " ", text).strip().lower()
 
+    def fmt(val):
+        if val == "" or val is None:
+            return ""
+        try:
+            return f"${float(val):,.0f}"
+        except (ValueError, TypeError):
+            return str(val)
+
     def populate_budget_table(inputs: dict, metrics: dict):
         print("DEBUG inputs:", inputs)
         print("DEBUG metrics:", metrics)
 
-        capex_total = inputs.get("capex", "")
-        opex_total = inputs.get("opex", "")
+        section_items = {
+            "capex": inputs.get("capex_items") or [],
+            "opex": inputs.get("opex_items") or [],
+        }
+
+        def sum_items(items):
+            amounts = [
+                item.get("amount") for item in items
+                if isinstance(item.get("amount"), (int, float))
+            ]
+            return sum(amounts) if amounts else None
+
+        # Total CAPEX/OPEX must equal the sum of the itemised rows shown
+        # directly above them in the table — using the separately-extracted
+        # top-level capex/opex figure instead (which may already include
+        # contingency, e.g. a source Grand Total) would make the total not
+        # add up to its own line items. Only fall back to that figure when
+        # no items were itemised.
+        capex_from_items = sum_items(section_items["capex"])
+        opex_from_items = sum_items(section_items["opex"])
+        capex_total = capex_from_items if capex_from_items is not None else inputs.get("capex", "")
+        opex_total = opex_from_items if opex_from_items is not None else inputs.get("opex", "")
+
+        total_cost = (
+            capex_total + opex_total
+            if isinstance(capex_total, (int, float)) and isinstance(opex_total, (int, float))
+            else metrics.get("total_cost", "")
+        )
         grand_total = inputs.get("grand_total", "")
-        total_cost = metrics.get("total_cost", "")
 
         print("DEBUG values:", capex_total, opex_total, grand_total, total_cost)
-
-        def fmt(val):
-            if val == "" or val is None:
-                return ""
-            try:
-                return f"${float(val):,.0f}"
-            except (ValueError, TypeError):
-                return str(val)
 
         def set_cell_text(cell, text):
             for para in cell.paragraphs:
@@ -186,32 +212,113 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
             else:
                 cell.paragraphs[0].add_run(text)
 
+        desc_col = None
+        cost_col = None
+
         for i, table in enumerate(doc.tables):
-            header_text = " ".join(
-                cell.text.strip().lower()
-                for cell in table.rows[0].cells
-            )
+            header_cells = [cell.text.strip().lower() for cell in table.rows[0].cells]
+            header_text = " ".join(header_cells)
             print(f"DEBUG table {i} header: {header_text}")
+
+            table_desc_col = next(
+                (idx for idx, h in enumerate(header_cells) if "description" in h),
+                None
+            )
+            table_cost_col = next(
+                (idx for idx, h in enumerate(header_cells) if "amount" in h),
+                None
+            )
+            if table_cost_col is None:
+                table_cost_col = next(
+                    (idx for idx, h in enumerate(header_cells) if "cost" in h and "unit" not in h),
+                    None
+                )
+
+            # A table may continue a previous table's columns without repeating
+            # its own header row (e.g. split across a page break) — in that
+            # case keep using the last table's column positions.
+            if table_desc_col is not None or table_cost_col is not None:
+                desc_col, cost_col = table_desc_col, table_cost_col
+
+            current_section = None
+            item_index = 0
 
             for row in table.rows:
                 first_cell = row.cells[0].text.strip().lower().rstrip(":")
                 last_cell_index = len(row.cells) - 1
+                # Prefer the header-derived cost column: some of the template's
+                # tables have broken row-spanning merges around their total
+                # rows, where the last cell in row.cells resolves to the wrong
+                # (or a shared/aliased) cell. The header column is stable.
+                total_col = cost_col if cost_col is not None else last_cell_index
 
                 print(f"DEBUG row first_cell: '{first_cell}', last_cell_index: {last_cell_index}")
 
                 if "total capex" in first_cell:
                     print("DEBUG matched total capex, writing:", fmt(capex_total))
-                    set_cell_text(row.cells[last_cell_index], fmt(capex_total))
+                    set_cell_text(row.cells[total_col], fmt(capex_total))
                 elif "total opex" in first_cell:
                     print("DEBUG matched total opex, writing:", fmt(opex_total))
-                    set_cell_text(row.cells[last_cell_index], fmt(opex_total))
+                    set_cell_text(row.cells[total_col], fmt(opex_total))
                 elif "total cost" in first_cell:
                     print("DEBUG matched total cost, writing:", fmt(total_cost))
-                    set_cell_text(row.cells[last_cell_index], fmt(total_cost))
+                    set_cell_text(row.cells[total_col], fmt(total_cost))
                 elif "grand total" in first_cell:
                     print("DEBUG matched grand total, writing:", fmt(grand_total))
-                    set_cell_text(row.cells[last_cell_index], fmt(grand_total))
-                    
+                    set_cell_text(row.cells[total_col], fmt(grand_total))
+                elif "capex" in first_cell:
+                    current_section = "capex"
+                    item_index = 0
+                elif "opex" in first_cell:
+                    current_section = "opex"
+                    item_index = 0
+                elif (
+                    current_section is not None
+                    and desc_col is not None
+                    and cost_col is not None
+                    and first_cell.isdigit()
+                ):
+                    items = section_items[current_section]
+                    if item_index < len(items):
+                        item = items[item_index]
+                        print(f"DEBUG matched {current_section} item {item_index}, writing:", item)
+                        set_cell_text(row.cells[desc_col], str(item.get("description") or ""))
+                        set_cell_text(row.cells[cost_col], fmt(item.get("amount", "")))
+                    item_index += 1
+
+        return total_cost
+
+    def strip_cost_breakdown_narrative(text: str) -> str:
+        """Drop CAPEX/OPEX narrative lines that duplicate the cost breakdown
+        table (section labels, itemised line items, Sub Total/Contingency/
+        Grand Total figures). The table is populated separately from
+        capex_items/opex_items, so repeating them as text in the "Estimated
+        Costs" paragraph is redundant.
+        """
+        label_line = re.compile(r"^\*{0,2}(capex|opex)\*{0,2}\s*:?\*{0,2}$", re.IGNORECASE)
+        item_line = re.compile(r"^\d+\.\s.*\$[\d,]+(\.\d+)?\s*$")
+        total_line = re.compile(
+            r"^(sub\s*total|contingency\b.*|grand\s*total)\s*:?.*\$[\d,]+(\.\d+)?\s*$",
+            re.IGNORECASE,
+        )
+        # Some drafts render the cost breakdown as a markdown table (e.g.
+        # "| Description | Estimated Cost ($) |") instead of the plain-text
+        # forms above — that duplicates the real docx table just as much.
+        markdown_table_line = re.compile(r"^\|.*\|\s*$")
+        markdown_table_separator = re.compile(r"^\|?[\s:|-]+\|[\s:|-]*\|?$")
+
+        kept_lines = [
+            line for line in text.splitlines()
+            if not (
+                label_line.match(line.strip())
+                or item_line.match(line.strip())
+                or total_line.match(line.strip())
+                or markdown_table_line.match(line.strip())
+                or markdown_table_separator.match(line.strip())
+            )
+        ]
+        return "\n".join(kept_lines)
+
     def parse_aor_sections(text: str):
         sections = {}
         title_lines = []
@@ -268,9 +375,14 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
         lines = new_text.splitlines()
         for index, line in enumerate(lines):
             if index > 0:
-                paragraph.add_run().add_break()
+                break_run = paragraph.add_run()
+                break_run.font.name = "Arial"
+                break_run.font.size = Pt(12)
+                break_run.add_break()
             cleaned_line = re.sub(r"^[-*]\s+", "", line.strip())
-            paragraph.add_run(cleaned_line)
+            run = paragraph.add_run(cleaned_line)
+            run.font.name = "Arial"
+            run.font.size = Pt(12)
 
     def find_heading_index(heading_names):
         names = {
@@ -368,7 +480,7 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
 
     replace_section_body(
         ["Proposed Budget", "Estimated Costs"],
-        sections.get("costs", ""),
+        strip_cost_breakdown_narrative(sections.get("costs", "")),
         stop_before_table=True
     )
 
@@ -385,10 +497,11 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
         sections.get("funding", "")
     )
 
-    replace_section_body(
-        ["Approving Authority"],
-        sections.get("authority", "")
-    )
+    # The Approving Authority sentence is left as the template's own
+    # formal wording ("In accordance with Paragraph 8.4.3, ... <xx> is the
+    # appropriate approving authority for operating expenditure up to
+    # <xx>.") — its two "<xx>" placeholders are filled in below, rather
+    # than replacing the whole sentence with the LLM's free-form phrasing.
 
     replace_section_body(
         ["Approval"],
@@ -397,7 +510,47 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
 
     # Populate budget table if structured data is available
     if inputs and metrics:
-        populate_budget_table(inputs, metrics)
+        table_total_cost = populate_budget_table(inputs, metrics)
+
+        # Fill the "<xx>" placeholder in the "proposed budget of <xx>
+        # (without 5% contingency)" sentence with the same total cost
+        # (CAPEX + OPEX, before contingency) shown in the table, so the
+        # narrative and the table never disagree.
+        for paragraph in doc.paragraphs:
+            if "proposed budget of" in paragraph.text.lower() and "without 5% contingency" in paragraph.text.lower():
+                for run in paragraph.runs:
+                    if run.text.strip() == "<xx>":
+                        run.text = run.text.replace("<xx>", fmt(table_total_cost))
+                    # This sentence is left as the template's own wording
+                    # (not rebuilt via replace_paragraph_text), so its font
+                    # is normalised here to match the rest of the body text.
+                    run.font.name = "Arial"
+                    run.font.size = Pt(12)
+
+    # Fill the two "<xx>" placeholders in the Approving Authority sentence
+    # with the authority name and spending threshold for the grand total.
+    # The sentence already ends "... up to <xx>.", so the threshold's own
+    # "Up to " prefix is dropped for the second placeholder to avoid
+    # "up to Up to S$5 million".
+    if inputs:
+        approval_info = determine_approving_authority(inputs.get("grand_total"))
+        if approval_info:
+            authority_name, threshold_label = approval_info
+            threshold_amount = re.sub(r"^(up to|above)\s+", "", threshold_label, flags=re.IGNORECASE)
+            xx_values = [authority_name, threshold_amount]
+            for paragraph in doc.paragraphs:
+                if "appropriate approving authority" in paragraph.text.lower():
+                    xx_index = 0
+                    for run in paragraph.runs:
+                        if run.text.strip() == "<xx>" and xx_index < len(xx_values):
+                            run.text = run.text.replace("<xx>", xx_values[xx_index])
+                            xx_index += 1
+                        # This sentence is left as the template's own
+                        # wording (not rebuilt via replace_paragraph_text),
+                        # so its font is normalised here to match the rest
+                        # of the body text.
+                        run.font.name = "Arial"
+                        run.font.size = Pt(12)
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -802,6 +955,14 @@ def clean_extracted_inputs(inputs: dict):
     cleaned = dict(inputs)
     for field in numeric_fields:
         cleaned[field] = to_number(cleaned.get(field))
+
+    for key in ("capex_items", "opex_items"):
+        items = cleaned.get(key) or []
+        cleaned[key] = [
+            {**item, "amount": to_number(item.get("amount"))}
+            for item in items if isinstance(item, dict)
+        ]
+
     return cleaned
 
 
@@ -1048,11 +1209,10 @@ FIELD_PLACEHOLDERS = {
 
 def build_missing_information_section(missing_fields: list) -> str:
     """Deterministically render the "Missing Information" section, rather
-    than leaving its wording/formatting to the LLM each time.
+    than leaving its wording/formatting to the LLM each time. Only called
+    when missing_fields is non-empty — when nothing is missing, the section
+    is omitted entirely rather than stating that fact.
     """
-    if not missing_fields:
-        return "5. Missing Information / Follow-up Required\n\nNo required information is missing."
-
     bullet_lines = "\n".join(
         f"- {FIELD_LABELS.get(field, field.replace('_', ' ').title())}"
         for field in missing_fields
@@ -1477,6 +1637,8 @@ Return exactly this JSON structure:
   "annual_manpower_impact_fte": null,
   "annual_benefit": null,
   "grand_total": null,
+  "capex_items": [],
+  "opex_items": [],
   "key_assumptions": [],
   "source_evidence": []
 }}
@@ -1549,6 +1711,14 @@ satisfy the "purpose" field.
   - Grand Total
   - Total Budget
   - Total Cost (including contingency).
+- "capex_items": an array of the individual CAPEX line items found in a CAPEX-labelled cost
+  table/section, each as {{"description": <item description>, "amount": <numeric cost for that
+  line item>}}. Only include line items that have their own description (e.g. "Provision of
+  cybersecurity services"), NOT Sub Total / Contingency / Grand Total / "Say" summary rows — those
+  totals are already captured separately via "capex". Preserve the order the items appear in the
+  source. If no itemised CAPEX line items are found, use [].
+- "opex_items": same as "capex_items" but for the individual line items found in an OPEX-labelled
+  cost table/section. If no itemised OPEX line items are found, use [].
 
 Worked example (a cost table where the CAPEX section header exists but every cost cell under
 it is blank, and the OPEX section below it has real figures):
@@ -1756,6 +1926,11 @@ Rules:
   - Annual Benefit: use annual_benefit
 - Do not recompute or alter the computed values.
 - If a computed value is null, state that it could not be calculated because the required information was not found.
+- In the Estimated Costs section, write only a short introductory sentence stating that the
+  estimated costs for the project are set out in the table below (e.g. "The estimated costs for
+  the project are as follows:"). Do NOT list "CAPEX:"/"OPEX:" labels, individual line items, Sub
+  Total, Contingency, or Grand Total figures as text — that breakdown is already rendered in the
+  accompanying cost breakdown table, so repeating it in the narrative is redundant.
 
 """
 
@@ -1879,11 +2054,9 @@ async def process(query: str = Form(""), file: UploadFile = File(None)):
         HumanMessage(content="Draft the AOR.")
     ])
 
-    full_result = (
-        final_response.content.rstrip()
-        + "\n\n"
-        + build_missing_information_section(missing_fields)
-    )
+    full_result = final_response.content.rstrip()
+    if missing_fields:
+        full_result += "\n\n" + build_missing_information_section(missing_fields)
 
     missing_sections = []
     section_matches = {}
