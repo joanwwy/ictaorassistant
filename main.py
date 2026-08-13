@@ -305,7 +305,7 @@ def build_result_docx(result_text: str, inputs: dict = None, metrics: dict = Non
 
         for paragraph in paragraphs_to_remove:
             p_elem = paragraph._p
-            p_elem.getparent().remove(p_elem))
+            p_elem.getparent().remove(p_elem)
 
     # Outside replace_section_body entirely
     title, sections = parse_aor_sections(result_text)
