@@ -2033,48 +2033,27 @@ that means leaving it blank rather than filling in a plausible-looking nearby nu
 - "project_duration_years": project duration in years as an integer.   If the document states a date range (e.g. FY25 to FY28), count the  number of full operational years, not the number of financial year 
   labels. For example, FY25 to FY27 = 3 years, FY25 to FY28 = 4 years.  Prefer an explicitly stated duration (e.g. "3-year contract") over  a derived date range if both are present..
 - "annual_productivity_time_savings_hours": the RAW total hours figure as stated in the
-  document, but ONLY if that figure represents time SAVED or reduced through the new system
-  (a benefit) — e.g. "the system is expected to save 720 hours annually" or a table explicitly
-  labelled as productivity/time savings. Do NOT annualise. Do NOT adjust for number of staff or
-  duration. Do NOT use a figure from a "Manpower Cost Capitalisation" table or any other table
-  whose purpose is to capitalise/cost staff EFFORT SPENT on implementing or operating the
-  project (e.g. "No. of hours", "Manpower Costs Capitalised" columns feeding into a CAPEX/OPEX
-  cost figure) — those hours represent a cost being incurred, not a benefit being gained, even
-  though the raw number and the word "hours" look similar. If the only hours figure in the
-  document is from such a cost-capitalisation table, use null.
-- "num_staff": number of staff whose time SAVINGS are being measured (e.g. 2 project officers
-  freed up by the new system). Subject to the same cost-vs-benefit distinction as
-  "annual_productivity_time_savings_hours" above — do NOT extract this from a manpower cost
-  capitalisation table. If no benefit-context staff count exists, use null.
-- "savings_duration_months": duration in months over which the raw time-savings hours figure was
-  measured (e.g. 9 months), for the same benefit-context figure as
-  "annual_productivity_time_savings_hours". Extract as a number. Do NOT extract this from a
-  manpower cost capitalisation table.
+  document. Do NOT annualise. Do NOT adjust for number of staff or duration. Prefer an explicit
+  time-savings/productivity statement (e.g. "the system is expected to save 720 hours annually")
+  if one exists. If no such explicit benefit statement exists but the document contains a
+  manpower cost-capitalisation table (e.g. "No. of hours", "Manpower Costs Capitalised"
+  columns), use that table's hours figure instead — always populate this field from whichever
+  hours figure is available rather than leaving it null when any hours figure exists in the
+  document.
+- "num_staff": number of staff whose time savings are being measured (e.g. 2 project officers).
+  Prefer an explicit time-savings context; otherwise fall back to the staff count from a
+  manpower cost-capitalisation table, same as "annual_productivity_time_savings_hours" above.
+- "savings_duration_months": duration in months over which the raw hours figure was measured
+  (e.g. 9 months). Extract as a number. Prefer an explicit time-savings context; otherwise fall
+  back to the duration stated in a manpower cost-capitalisation table.
 - "man_hour_rate": the man-hour rate in dollars per hour as explicitly stated in the document
-  (e.g. 98), used to value time savings as a benefit. Do NOT default to any standard rate if not
-  found. A man-hour rate appearing only inside a manpower cost capitalisation table (used to
-  cost staff effort, not value savings) does not satisfy this field — use null unless the same
-  rate is also tied to a benefit/time-savings context.
+  (e.g. 98). Do NOT default to any standard rate if not found. Prefer a rate explicitly tied to a
+  benefit/time-savings context; otherwise fall back to the rate stated in a manpower
+  cost-capitalisation table.
 - "annual_manpower_impact_fte": annual manpower impact in FTE, only if explicitly stated as a
-  final FTE figure representing manpower freed up / saved (a benefit). Do NOT derive this from a
-  manpower cost capitalisation table's FTE column, which represents staff effort spent, not
-  saved.
+  final FTE figure in the document.
 - "annual_benefit": annual benefit in dollars, only if explicitly stated as a final dollar
   benefit figure in the document.
-
-Worked example (a table that looks like it could feed a productivity-savings calculation, but is
-actually a cost — used to capitalise staff time spent implementing the project):
-
-  S/N | No. of Full-Time Equivalents | No. of hours | FY25 Man-Hour Rate ($) | Manpower Costs Capitalised ($)
-  1   | Two sample project officers  | 720 (based on 50% of working time over 9 months) | 98 | 141,120
-
-This table is titled "Manpower Cost Capitalisation" and its output column is a COST ("Manpower
-Costs Capitalised"), not a benefit. The 720 hours is staff effort spent ON the project, not time
-SAVED by using it. The CORRECT extraction from this table alone is
-"annual_productivity_time_savings_hours": null, "num_staff": null, "savings_duration_months":
-null, and "man_hour_rate": null. It would be WRONG to extract 720, 2, 9, or 98 into these
-benefit-related fields just because the numbers are present and labelled "hours"/"rate" — this
-table has no bearing on productivity time savings.
 - "key_assumptions": assumptions explicitly stated in the document.
 - "source_evidence": short evidence snippets from the context.
 
